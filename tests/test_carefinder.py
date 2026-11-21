@@ -120,6 +120,18 @@ def test_other_facility_claims_are_ignored():
     assert other_facility("Patients referred from Ganga Ram Hospital", tokens("Sai Clinic")) == "Ganga Ram Hospital"
 
 
+def test_negated_related_words_do_not_penalise():
+    """'lack of ICU' must not count as 'burn care unavailable'; only direct mentions of the service do."""
+    from carefinder.evidence import score_evidence
+    from carefinder.taxonomy import SERVICES
+    f = CareFinder(sample_frame())
+    rec = dict(f._records[0], description="Inspectors noted a lack of ICU beds. Has a 10-bed burn unit.",
+               procedure=[], capability=[], equipment=[], specialties=[])
+    ev = score_evidence(rec, SERVICES["burn_care"])
+    assert ev.has_core
+    assert not any("unavailable" in reason for _, reason in f.trust_factors(rec, SERVICES["burn_care"], ev))
+
+
 def test_snippet_shows_the_match():
     from carefinder.evidence import _snippet
     long = "Specialties include " + ", ".join(f"Thing{i}" for i in range(40)) + ", Burns Management, Cardiology"

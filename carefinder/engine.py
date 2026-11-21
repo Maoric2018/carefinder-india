@@ -125,8 +125,9 @@ class CareFinder:
             add("clinic")
         if service.min_beds and row["capacity"] is not None and row["capacity"] < service.min_beds:
             add("too_small", f"{row['capacity']:.0f} beds listed, usually ≥{service.min_beds}")
-        if ev.negated:
-            add("negated", f'"{ev.negated[0].snippet}"')
+        negated_core = [h for h in ev.negated if h.kind == "core"]
+        if negated_core:
+            add("negated", f'"{negated_core[0].snippet}"')
         return f
 
     # ---- search ---------------------------------------------------------------------------
