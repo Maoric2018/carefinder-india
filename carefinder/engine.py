@@ -26,7 +26,7 @@ TRUST = {
     "location_city": (0.90, "it has no usable coordinates, so distance is from its city centre"),
     "location_pin": (0.92, "it has no usable coordinates, so distance is from its PIN area"),
     "pin_state_mismatch": (0.85, "its PIN code belongs to a different state than the one listed"),
-    "merged": (0.75, "the record may merge more than one facility"),
+    "merged": (0.80, "the record may merge more than one facility"),
     "corrupted": (0.60, "the record's columns look shifted (corrupted row)"),
     "foreign": (0.90, "some of its mentions of this service are about other facilities, so we ignored them"),
     "no_sources": (0.90, "it has no source URL to check against"),
@@ -183,7 +183,7 @@ class CareFinder:
         ranked = within.sort_values("rank_score", ascending=False).drop_duplicates("dup_group")
         top = ranked.head(top_k)
         # Always show the closest facility with strong evidence, even if the score put it just outside.
-        strong = ranked[ranked["confidence"] >= LABELS[0][0]]
+        strong = ranked[(ranked["confidence"] >= LABELS[0][0]) & (ranked["distance_km"] <= service.travel_km)]
         if len(strong) and len(top) >= top_k:
             closest_strong = strong.nsmallest(1, "distance_km")
             if int(closest_strong["i"].iloc[0]) not in set(top["i"].astype(int)):
@@ -257,6 +257,7 @@ def explain(row: dict, ev: Evidence, factors, service: Service, loc: ResolvedLoc
     lines.append(f"- Its record mentions {service.label.lower()} in {n} field{'s' if n != 1 else ''}:")
     lines += [f'    - {c["field"]}: “{c["text"]}”' + (" _(inside a long list)_" if c.get("listed") else "")
               for c in core[:6]]
+    support = sorted((c for c in support if len(c["text"]) <= 160), key=lambda c: len(c["text"]))
     if support:
         lines.append("- Related specialties/equipment: " + "; ".join(f'“{c["text"]}”' for c in support[:3]))
     if ev.specific:

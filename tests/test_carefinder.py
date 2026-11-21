@@ -112,6 +112,12 @@ def test_other_facility_claims_are_ignored():
     assert other_facility("Robotic surgery at Fortis Memorial Research Institute", tokens("Fortis Hospital Anandapur"))
     assert other_facility("Hip replacement at Fortis Hospital, Anandapur", tokens("Fortis Hospital Anandapur")) is None
     assert own_website("Patna Dialysis Centre", ["https://www.justdial.com/x", "http://patnadialysis.com/"]) == "patnadialysis.com"
+    # Listing-site phrases, spelling variants, verbs and landmarks are not other facilities.
+    assert other_facility("Rated a Top Clinic on Practo", tokens("Bansal Hospital")) is None
+    assert other_facility("Also spelled Dhanvatri Hospital", tokens("Dhanvantari Hospital")) is None
+    assert other_facility("Operates Dental IQ Clinic", tokens("Dental IQ Clinic")) is None
+    assert other_facility("Located opposite City Hospital, Main Road", tokens("Sai Clinic")) is None
+    assert other_facility("Patients referred from Ganga Ram Hospital", tokens("Sai Clinic")) == "Ganga Ram Hospital"
 
 
 def test_snippet_shows_the_match():

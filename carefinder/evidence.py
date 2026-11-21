@@ -137,7 +137,7 @@ def _units(row) -> list[tuple[str, str]]:
     return units
 
 
-def score_evidence(row, service: Service, max_hits_per_field: int = 2) -> Evidence:
+def score_evidence(row, service: Service, max_hits_per_field: int = 3) -> Evidence:
     pattern = _matcher(service)
     ev = Evidence()
     core_strength: dict[str, float] = {}

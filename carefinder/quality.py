@@ -24,6 +24,7 @@ AGREE_MIN_KM = 25            # two location signals "agree" if within max(this, 
 MIN_CITY_POINTS = 3          # need this many facilities before trusting a city's centre
 SHARED_COORD_MIN = 3         # this many differently-named facilities on one point = placeholder geocode
 BREADTH_CLAIMS = 40          # informational only
+MERGE_MIN_OTHERS = 3         # claims naming this many other facilities = probably a merged record
 KNOWN_FACILITY_TYPES = {"hospital", "clinic", "dentist", "doctor", "farmacy", "pharmacy", "ngo", "facility"}
 
 
@@ -155,7 +156,7 @@ def assess(df: pd.DataFrame, pin_dir: PinDirectory | None = None) -> tuple[pd.Da
                 if both and _km(city_c.lat, city_c.lon, pin_c.lat, pin_c.lon) <= max(
                         AGREE_MIN_KM, 3 * max(city_c.spread_km, pin_c.spread_km)):
                     issue = "coords_fixed"
-                    detail = f"coordinates were {d_city:.0f} km from both its city and its PIN, so we used its address"
+                    detail = f"they were {d_city:.0f} km from both its city and its PIN"
                     lat, lon, quality = pin_c.lat, pin_c.lon, "PIN area"
                 elif not both:
                     r = refs[0]
@@ -217,8 +218,9 @@ def assess(df: pd.DataFrame, pin_dir: PinDirectory | None = None) -> tuple[pd.Da
             o = other_facility(str(t), own)
             if o and o not in others:
                 others.append(o)
-        if len(others) >= 2:
-            reasons.append(f"{len(others)} of its claims describe other facilities (e.g. “{others[0]}”, “{others[1]}”)")
+        if len(others) >= MERGE_MIN_OTHERS:
+            reasons.append(f"{len(others)} of its claims describe other facilities "
+                           f"(e.g. “{others[0]}”, “{others[1]}”, “{others[2]}”)")
         desc = row.description or ""
         own_region = row.postcode[0] if row.postcode else next(
             (k for k, states in PIN_REGIONS.items() if row.state_n in states), None)
