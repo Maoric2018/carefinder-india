@@ -15,7 +15,7 @@
 import json
 import pandas as pd
 from carefinder import CareFinder, SERVICES
-from carefinder.engine import evidence_table
+from carefinder.engine import evidence_table, find_care_sql, places_table
 
 raw = spark.table(FACILITY_TABLE).toPandas()
 pins = spark.table(PIN_TABLE).toPandas() if PIN_TABLE else None
@@ -58,6 +58,16 @@ spark.createDataFrame(svc).write.mode("overwrite").option("overwriteSchema", "tr
 
 # COMMAND ----------
 
+# Place lookup (city / district / post office / PIN / state -> coordinates) and the ranking function for Genie.
+places = places_table(finder)
+spark.createDataFrame(places).write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(f"{TARGET}.places")
+print(f"{TARGET}.places: {len(places):,} rows")
+spark.sql(find_care_sql(TARGET))
+display(spark.sql(f"SELECT option_rank, facility_name, city, distance_km, confidence_label, top_quote, caveats "
+                  f"FROM {TARGET}.find_care('Dialysis', 'Bakhtiyarpur, Bihar')"))
+
+# COMMAND ----------
+
 # Column comments help Genie answer questions correctly.
 comments = {
     "facility_service_evidence": {
@@ -66,6 +76,15 @@ comments = {
         "confidence": "evidence_score x trust. High >= 0.70, Medium >= 0.45, otherwise Low.",
         "citations": "JSON list of quoted text from the facility record that supports the claim.",
         "caveats": "Reasons the trust score was reduced, separated by |.",
+        "top_quote": "The strongest quote from the facility record that says it offers the service.",
+        "district": "District (from the facility record, or from its PIN code via the India Post directory).",
+        "state": "State, lower case (taken from the PIN code when the record's state field was not a real state).",
+        "lat": "Latitude used for distances (facility coordinates if they agree with its address, else its PIN/city centre).",
+    },
+    "places": {
+        "name": "Lower-case place name or 6-digit PIN code to look up.",
+        "kind": "city, district, post office, pin or state.",
+        "spread_km": "How spread out the place is; distances from it are approximate by about this much.",
     },
     "facilities_scored": {
         "loc_quality": "exact = facility coordinates agree with its address; PIN area / city centre = approximated.",

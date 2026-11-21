@@ -337,15 +337,103 @@ def evidence_table(finder: CareFinder, services=None) -> pd.DataFrame:
                 continue
             factors = finder.trust_factors(rec, service, ev)
             trust = math.prod(m for m, _ in factors)
+            state = rec["state_n"] or (rec["state"] or "").lower() or None
             rows.append({
-                "facility_id": rec["id"], "facility_name": rec["name"], "city": rec["city"], "state": rec["state"],
+                "facility_id": rec["id"], "facility_name": rec["name"], "address": rec["address"],
+                "city": rec["city"], "district": rec["district_n"], "state": state, "postcode": rec["postcode"],
                 "service": service.key, "service_label": service.label, "evidence_score": ev.score,
                 "trust": round(trust, 3), "confidence": round(ev.score * trust, 3),
                 "confidence_label": confidence_label(ev.score * trust),
                 "evidence_fields": ", ".join(FIELD_LABELS[f] for f in ev.core_fields),
                 "citations": json.dumps([{"field": FIELD_LABELS[h.field], "kind": h.kind, "text": h.snippet}
                                          for h in ev.hits], ensure_ascii=False),
+                "top_quote": next((h.snippet for h in ev.hits if h.kind == "core"), None),
                 "caveats": " | ".join(reason for _, reason in factors),
                 "lat": rec["loc_lat"], "lon": rec["loc_lon"], "location_quality": rec["loc_quality"],
+                "phone": (rec["phone"] or [None])[0], "website": rec["own_site"] or (rec["website"] or [None])[0],
+                "sources": " ".join(list(rec["source_urls"])[:3]),
             })
     return pd.DataFrame(rows)
+
+
+def places_table(finder: CareFinder) -> pd.DataFrame:
+    """Every place name we can resolve (city, district, post office, PIN, state) -> coordinates, for SQL/Genie."""
+    from .geo import CITY_ALIASES
+    g, pd_ = finder.gazetteer, finder.pin_dir
+    rows = []
+
+    def add(name, kind, p, state=None):
+        rows.append({"name": name, "label": p.label, "kind": kind, "state": state or p.state,
+                     "lat": round(p.lat, 5), "lon": round(p.lon, 5), "n": int(p.n), "spread_km": round(p.spread_km, 1)})
+
+    for city, places in g.by_city.items():
+        for p in places:
+            add(city, "city", p)
+    for alias, target in CITY_ALIASES.items():
+        if alias != target:
+            for p in g.by_city.get(target, []):
+                add(alias, "city", p)
+    if pd_ is not None:
+        for d, places in pd_.districts.items():
+            for p in places:
+                add(d, "district", p)
+        for pin, p in pd_.pins.items():
+            add(pin, "pin", p, state=p.states[0] if p.states else None)
+        for office, places in pd_.offices.items():
+            for p in places:
+                add(office, "post office", p)
+    else:
+        for d, places in g.by_district.items():
+            for p in places:
+                add(d, "district", p)
+        for pin, p in g.by_pin.items():
+            add(pin, "pin", p)
+    for s, p in g.by_state.items():
+        add(s, "state", p)
+    return pd.DataFrame(rows)
+
+
+def find_care_sql(target: str) -> str:
+    """SQL table function with the same ranking as CareFinder.search, for Genie and dashboards."""
+    return f"""
+CREATE OR REPLACE FUNCTION {target}.find_care(service_name STRING, place STRING)
+RETURNS TABLE (option_rank INT, facility_name STRING, address STRING, city STRING, district STRING, state STRING,
+               distance_km DOUBLE, confidence_label STRING, confidence DOUBLE, evidence_score DOUBLE, trust DOUBLE,
+               evidence_fields STRING, top_quote STRING, citations STRING, caveats STRING, location_quality STRING,
+               phone STRING, website STRING)
+COMMENT 'Best facilities for a service near a place (city, district, village/post office, 6-digit PIN, or state; add ", <state>" to disambiguate). Ranked by confidence x exp(-distance_km / the service travel scale), the same rule as the CareFinder app. Always quote top_quote/citations as evidence and report caveats as uncertainty.'
+RETURN
+  WITH q AS (
+    SELECT lower(trim(split(place, ',')[0])) AS p,
+           lower(trim(try_element_at(split(place, ','), 2))) AS st
+  ),
+  loc AS (
+    SELECT pl.lat, pl.lon FROM {target}.places pl CROSS JOIN q
+    WHERE pl.name = q.p
+    ORDER BY CASE WHEN q.st IS NOT NULL AND pl.state = q.st THEN 0 ELSE 1 END,
+             CASE pl.kind WHEN 'pin' THEN 0 WHEN 'city' THEN 1 WHEN 'district' THEN 2 WHEN 'post office' THEN 3 ELSE 4 END,
+             pl.n DESC
+    LIMIT 1
+  ),
+  svc AS (
+    SELECT service, travel_km FROM {target}.services
+    WHERE lower(label) = lower(trim(service_name)) OR service = lower(trim(service_name))
+       OR lower(label) LIKE concat('%', lower(trim(service_name)), '%')
+       OR lower(core_terms) LIKE concat('%', lower(trim(service_name)), '%')
+    ORDER BY CASE WHEN lower(label) = lower(trim(service_name)) OR service = lower(trim(service_name)) THEN 0 ELSE 1 END
+    LIMIT 1
+  ),
+  c AS (
+    SELECT e.*, svc.travel_km,
+           2 * 6371 * asin(sqrt(pow(sin(radians(e.lat - loc.lat) / 2), 2)
+             + cos(radians(loc.lat)) * cos(radians(e.lat)) * pow(sin(radians(e.lon - loc.lon) / 2), 2))) AS d
+    FROM {target}.facility_service_evidence e CROSS JOIN loc CROSS JOIN svc
+    WHERE e.service = svc.service AND e.lat IS NOT NULL
+  )
+  SELECT CAST(row_number() OVER (ORDER BY confidence * exp(-d / travel_km) DESC) AS INT) AS option_rank,
+         facility_name, address, city, district, state, round(d, 1) AS distance_km, confidence_label, confidence,
+         evidence_score, trust, evidence_fields, top_quote, citations, caveats, location_quality, phone, website
+  FROM c
+  ORDER BY option_rank
+  LIMIT 10
+"""

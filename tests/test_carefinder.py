@@ -135,4 +135,15 @@ def test_render(finder):
 def test_method_and_table(finder):
     assert "How we decide" in method_markdown()
     table = evidence_table(finder)
-    assert {"facility_id", "service", "confidence", "citations"} <= set(table.columns)
+    assert {"facility_id", "service", "confidence", "citations", "district", "top_quote"} <= set(table.columns)
+
+
+def test_places_and_sql():
+    from carefinder.engine import find_care_sql, places_table
+    f = CareFinder(sample_frame(), pin_directory=sample_pins())
+    places = places_table(f)
+    assert {"city", "pin", "district", "post office", "state"} <= set(places["kind"])
+    assert (places["name"] == "bakhtiyarpur").any()
+    assert (places["name"] == "bombay").any()  # alias rows
+    sql = find_care_sql("workspace.carefinder")
+    assert "workspace.carefinder.places" in sql and "find_care" in sql
