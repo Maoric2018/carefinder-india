@@ -1,0 +1,23 @@
+pk_unique_id,name,facilityTypeId,address_city,address_stateOrRegion,address_zipOrPostcode,latitude,longitude,specialties,capability,procedure,equipment,description,yearEstablished,numberDoctors,capacity,source_urls
+f1,Patna Kidney Care Hospital,hospital,Patna,Bihar,800001,25.61,85.14,"[""nephrology"", ""internalMedicine""]","[""24x7 dialysis unit"", ""Kidney transplant workup""]","[""Hemodialysis"", ""Peritoneal dialysis (CAPD)""]","[""6 Fresenius dialysis machines"", ""RO plant""]",Patna Kidney Care runs a 6-bed dialysis unit under PMNDP. Nephrologist available daily.,2009.0,14.0,60.0,"[""https://example.org/pkc""]"
+f2,Sai Clinic,clinic,Patna,Bihar,800004,25.6,85.13,"[""generalMedicine""]",[],[],[],General physician clinic. Dialysis services also available.,,,,[]
+f3,Ganga Hospital,hospital,Patna,Bihar,800020,28.61,77.2,"[""nephrology""]","[""Dialysis""]","[""Haemodialysis""]",[],Multi-specialty hospital with dialysis.,,,40.0,"[""https://example.org/ganga""]"
+f4,Bihar Heart & Maternity Hospital,hospital,Patna,Bihar,800013,25.5941,85.1376,"[""obstetricsAndGynecology"", ""neonatology""]","[""Level III NICU"", ""24x7 emergency obstetric care"", ""Blood bank""]","[""LSCS"", ""Normal delivery""]","[""12 radiant warmers"", ""Neonatal ventilator""]",Comprehensive emergency obstetric and newborn care (CEmONC). Labour room and obstetric OT 24x7.,,20.0,80.0,"[""https://example.org/bhm"", ""https://other.example.com/bhm""]"
+f5,Hajipur Dialysis Centre,clinic,Hajipur,Bihar,844101,25.6858,85.2146,"[""nephrology""]","[""Dialysis""]","[""Hemodialysis""]","[""Dialysis machines""]",Standalone dialysis centre.,,,,"[""https://example.org/hdc""]"
+f6,Patna Kidney Care Hospital,hospital,Patna,Bihar,800001,25.6101,85.1401,"[""nephrology""]","[""Dialysis""]",[],[],Kidney hospital.,,,,"[""https://example.org/pkc2""]"
+f7,City Hospital and Sunrise Clinic,hospital,Patna,Bihar,800001,25.605,85.135,"[""cardiology""]","[""Cath lab""]","[""Angioplasty""]",[],Branches in Mumbai and Chennai and Bengaluru. Contact 400001 or 600001.,,,,"[""https://example.org/city""]"
+f8,Danapur Medicos,pharmacy,Danapur,Bihar,801503,25.62,85.045,[],"[""Dialysis consumables""]",[],[],Chemist and druggist.,,,,[]
+f9,Gaya Medical Hospital,hospital,Gaya,Bihar,823001,24.7914,85.0002,"[""nephrology""]","[""Dialysis unit (coming soon)""]",[],[],We do not have dialysis yet; patients are referred to Patna for dialysis.,,,,"[""https://example.org/gaya""]"
+m1,Mumbai Hospital 1,hospital,Mumbai,Maharashtra,400001,19.080000000000002,72.88000000000001,"[""cardiology""]","[""Cardiac surgery""]","[""CABG""]","[""Heart-lung machine""]",Hospital in Mumbai.,,,200.0,"[""https://example.org/m1""]"
+m2,Mumbai Hospital 2,hospital,Mumbai,Maharashtra,400002,19.09,72.89,"[""cardiology""]","[""Cardiology OPD""]",[],[],Hospital in Mumbai.,,,200.0,"[""https://example.org/m2""]"
+m3,Mumbai Hospital 3,hospital,Mumbai,Maharashtra,400003,19.1,72.9,"[""cardiology""]","[""Cardiology OPD""]",[],[],Hospital in Mumbai.,,,200.0,"[""https://example.org/m3""]"
+m4,Mumbai Hospital 4,hospital,Mumbai,Maharashtra,400004,19.11,72.91000000000001,"[""cardiology""]","[""Cardiology OPD""]",[],[],Hospital in Mumbai.,,,200.0,"[""https://example.org/m4""]"
+c1,Chennai Clinic 1,clinic,Madras,Tamilnadu,600001,13.09,80.28,"[""dentistry""]",[],"[""Root canal""]",[],Dental clinic.,,,,[]
+c2,Chennai Clinic 2,clinic,Madras,Tamilnadu,600002,13.1,80.28999999999999,"[""dentistry""]",[],"[""Root canal""]",[],Dental clinic.,,,,[]
+c3,Chennai Clinic 3,clinic,Madras,Tamilnadu,600003,13.11,80.3,"[""dentistry""]",[],"[""Root canal""]",[],Dental clinic.,,,,[]
+b1,Bengaluru Nursing Home 1,hospital,Bangalore,Karnataka,560001,12.98,77.60000000000001,"[""generalSurgery""]",[],[],[],Nursing home.,,,,[]
+b2,Bengaluru Nursing Home 2,hospital,Bangalore,Karnataka,560002,12.99,77.61,"[""generalSurgery""]",[],[],[],Nursing home.,,,,[]
+b3,Bengaluru Nursing Home 3,hospital,Bangalore,Karnataka,560003,13.0,77.62,"[""generalSurgery""]",[],[],[],Nursing home.,,,,[]
+p1,Patna Health Centre 1,clinic,Patna,Bihar,800001,25.605,85.13499999999999,"[""generalMedicine""]",[],[],[],Primary care.,,,,[]
+p2,Patna Health Centre 2,clinic,Patna,Bihar,800001,25.610000000000003,85.14,"[""generalMedicine""]",[],[],[],Primary care.,,,,[]
+p3,Patna Health Centre 3,clinic,Patna,Bihar,800001,25.615000000000002,85.145,"[""generalMedicine""]",[],[],[],Primary care.,,,,[]

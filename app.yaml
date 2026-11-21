@@ -1,0 +1,9 @@
+command: ["streamlit", "run", "app.py"]
+env:
+  - name: DATABRICKS_WAREHOUSE_ID
+    valueFrom: sql-warehouse
+  # Fill these in after running notebooks/01_explore_data.py (it prints the real table names).
+  - name: FACILITY_TABLE
+    value: "virtue_foundation_dataset.default.facilities"
+  - name: PIN_TABLE
+    value: "virtue_foundation_dataset.default.india_post_pincode_directory"
