@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 
+from .names import other_facility, tokens
 from .taxonomy import Service, normalize
 
 # How much a single field counts as evidence. They are combined like independent witnesses
@@ -19,6 +20,7 @@ FIELD_WEIGHTS: dict[str, float] = {
     "specialties": 0.40,
 }
 CORE_STRENGTH = 1.0      # the field names the service itself
+LIST_STRENGTH = 0.6      # ...but only inside a long laundry list ("Specialities: A, B, C, D, ...")
 SUPPORT_STRENGTH = 0.35  # the field only names related specialty/equipment/staff
 SPECIFIC_DETAIL_WEIGHT = 0.25  # a core claim with concrete detail (counts, brands, capacity)
 
@@ -52,6 +54,8 @@ class Hit:
     kind: str  # "core" or "support"
     snippet: str
     negated: bool = False
+    listed: bool = False          # only appears inside a long list of services
+    other_facility: str | None = None  # the sentence is about this other facility
 
 
 @dataclass
@@ -61,7 +65,9 @@ class Evidence:
     support_fields: list[str] = field(default_factory=list)
     hits: list[Hit] = field(default_factory=list)
     negated: list[Hit] = field(default_factory=list)
+    foreign: list[Hit] = field(default_factory=list)  # mentions that describe a different facility
     specific: bool = False
+    listed_only: bool = False  # every direct mention is inside a long list
 
     @property
     def has_core(self) -> bool:
@@ -95,9 +101,27 @@ def _is_negated(unit_norm: str, start: int, end: int) -> bool:
     return any(p in after for p in _NEG_AFTER)
 
 
-def _snippet(text: str, limit: int = 220) -> str:
+def _snippet(text: str, term: str = "", limit: int = 220) -> str:
+    """The text, or a window of it centred on the matched term so the quote always shows the match."""
     text = re.sub(r"\s+", " ", text).strip()
-    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+    if len(text) <= limit:
+        return text
+    pos = 0
+    if term:
+        m = re.search(r"[^a-z0-9]+".join(re.escape(w) for w in term.split()), text, re.IGNORECASE)
+        pos = m.start() if m else 0
+    start = max(0, min(pos - limit // 3, len(text) - limit))
+    if start > 0:
+        start = text.find(" ", start) + 1 or start
+    end = min(len(text), start + limit)
+    if end < len(text):
+        end = text.rfind(" ", start, end) if text.rfind(" ", start, end) > pos else end
+    return ("…" if start > 0 else "") + text[start:end].strip() + ("…" if end < len(text) else "")
+
+
+def _is_list(text: str) -> bool:
+    """A long enumeration of services, where one entry is weaker evidence than a dedicated statement."""
+    return text.count(",") + text.count(";") >= 6
 
 
 def _units(row) -> list[tuple[str, str]]:
@@ -113,38 +137,50 @@ def _units(row) -> list[tuple[str, str]]:
     return units
 
 
-def score_evidence(row, service: Service, max_hits_per_field: int = 3) -> Evidence:
+def score_evidence(row, service: Service, max_hits_per_field: int = 2) -> Evidence:
     pattern = _matcher(service)
     ev = Evidence()
-    core_fields: set[str] = set()
+    core_strength: dict[str, float] = {}
     support_fields: set[str] = set()
     found: list[Hit] = []
+    own = tokens(row.get("name"))
 
     for fld, text in _units(row):
         norm = normalize(text)
         best: Hit | None = None  # one citation per unit: its strongest non-negated mention
+        other = None
         for m in pattern.finditer(norm):
             kind = "core" if m.group("core") else "support"
             if set(norm[m.end():m.end() + 40].split()[:2]) & _PRODUCT_AFTER:
                 continue
-            hit = Hit(fld, m.group(kind), kind, _snippet(text))
+            hit = Hit(fld, m.group(kind), kind, _snippet(text, m.group(kind)))
             if _is_negated(norm, m.start(), m.end()):
                 hit.negated = True
                 ev.negated.append(hit)
                 continue
+            if fld != "name":
+                other = other if other is not None else (other_facility(text, own) or "")
+                if other:
+                    hit.other_facility = other
+                    if kind == "core":
+                        ev.foreign.append(hit)
+                    continue
             if kind == "core":
-                core_fields.add(fld)
-                ev.specific = ev.specific or bool(_SPECIFIC.search(text))
-                if best is None or best.kind != "core":
+                hit.listed = _is_list(text)
+                strength = LIST_STRENGTH if hit.listed else CORE_STRENGTH
+                core_strength[fld] = max(core_strength.get(fld, 0.0), strength)
+                ev.specific = ev.specific or (not hit.listed and bool(_SPECIFIC.search(text)))
+                if best is None or best.kind != "core" or (best.listed and not hit.listed):
                     best = hit
             else:
                 support_fields.add(fld)
                 best = best or hit
         if best:
             found.append(best)
+    core_fields = set(core_strength)
 
     order = list(FIELD_WEIGHTS)
-    found.sort(key=lambda h: (h.kind != "core", order.index(h.field)))
+    found.sort(key=lambda h: (h.kind != "core", h.listed, order.index(h.field)))
     per_field: dict[tuple[str, str], int] = {}
     for h in found:
         key = (h.field, h.kind)
@@ -155,11 +191,12 @@ def score_evidence(row, service: Service, max_hits_per_field: int = 3) -> Eviden
     support_fields -= core_fields
     ev.core_fields = [f for f in FIELD_WEIGHTS if f in core_fields]
     ev.support_fields = [f for f in FIELD_WEIGHTS if f in support_fields]
+    ev.listed_only = bool(core_strength) and max(core_strength.values()) < CORE_STRENGTH
 
     remaining = 1.0
     for f, w in FIELD_WEIGHTS.items():
         if f in core_fields:
-            remaining *= 1 - w * CORE_STRENGTH
+            remaining *= 1 - w * core_strength[f]
         elif f in support_fields:
             remaining *= 1 - w * SUPPORT_STRENGTH
     if ev.specific:

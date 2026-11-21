@@ -63,10 +63,14 @@ summary = {
     "coordinates ok": int((f.coord_status == "ok").sum()),
     "coordinates swapped (fixed)": int((f.coord_status == "swapped").sum()),
     "coordinates missing / outside India": int(f.coord_status.isin(["missing", "outside_india"]).sum()),
-    "coordinates contradict city or PIN": int(f.coords_conflict.sum()),
+    "coordinates wrong, fixed from address (city + PIN agree)": int((f.location_issue == "coords_fixed").sum()),
+    "location unresolved (signals disagree)": int((f.location_issue == "coords_conflict").sum()),
+    "address internally inconsistent (city or PIN off)": int((f.location_issue == "address_inconsistent").sum()),
+    "coordinates shared by 3+ facilities (placeholder)": int((f.loc_quality == "shared coordinates").sum()),
     "PIN in wrong state": int(f.pin_state_mismatch.sum()),
     "possible merged records": int(f.merge_reasons.map(bool).sum()),
-    "suspiciously long claim lists": int(f.breadth_flag.sum()),
+    "corrupted rows (shifted columns)": int(f.corrupted.sum()),
+    "has its own website among sources": int(f.own_site.notna().sum()),
     "records with duplicates": int((f.dup_count > 0).sum()),
     "no location at all": int((f.loc_quality == "unknown").sum()),
 }
@@ -76,6 +80,6 @@ display(f["kind"].value_counts().reset_index())
 # COMMAND ----------
 
 # Examples of each problem, to eyeball whether the checks are right.
-cols = ["name", "city", "state", "postcode", "lat", "lon", "conflict_detail", "merge_reasons", "n_claims", "kind"]
+cols = ["name", "city", "state", "postcode", "lat", "lon", "location_issue", "location_detail", "merge_reasons", "kind"]
 display(f[f.coords_conflict][cols].head(20))
 display(f[f.merge_reasons.map(bool)][cols].head(20))

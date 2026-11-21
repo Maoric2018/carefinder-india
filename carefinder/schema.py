@@ -18,6 +18,7 @@ LOGICAL_FIELDS: dict[str, list[str]] = {
     "id": ["pk_unique_id", "unique_id", "facility_id", "id", "uuid"],
     "name": ["name", "facility_name", "organization_name", "hospital_name"],
     "facility_type": ["facility_type_id", "facility_type", "type"],
+    "organization_type": ["organization_type", "org_type"],
     "operator_type": ["operator_type_id", "operator_type", "ownership"],
     "address": ["address_line1", "address_line_1", "address", "full_address"],
     "city": ["address_city", "city", "town"],
@@ -91,7 +92,8 @@ def standardize(df: pd.DataFrame, mapping: dict[str, str | None]) -> pd.DataFram
     ids = col("id")
     out["id"] = [str(v) if v is not None and str(v).strip() not in ("", "nan", "None") else f"row-{i}"
                  for i, v in zip(range(len(df)), ids)]
-    for field in ("name", "facility_type", "operator_type", "address", "city", "district", "state", "description"):
+    for field in ("name", "facility_type", "organization_type", "operator_type", "address", "city", "district",
+                  "state", "description"):
         out[field] = col(field).map(to_text)
     out["postcode"] = col("postcode").map(clean_postcode)
     out["lat"] = col("lat").map(to_float)

@@ -25,8 +25,15 @@ STATE_ALIASES = {
     "chattisgarh": "chhattisgarh", "chhatisgarh": "chhattisgarh", "telengana": "telangana",
     "up": "uttar pradesh", "mp": "madhya pradesh", "ap": "andhra pradesh", "wb": "west bengal",
     "andaman and nicobar": "andaman and nicobar islands", "daman and diu": "dadra and nagar haveli and daman and diu",
-    "dadra and nagar haveli": "dadra and nagar haveli and daman and diu",
+    "dadra and nagar haveli": "dadra and nagar haveli and daman and diu", "u p": "uttar pradesh",
+    "nct delhi": "delhi", "delhi nct": "delhi", "nct": "delhi", "government of nct delhi": "delhi", "br": "bihar",
+    "mh": "maharashtra", "ka": "karnataka", "kl": "kerala", "gj": "gujarat", "rj": "rajasthan", "hr": "haryana",
+    "pb": "punjab", "jh": "jharkhand", "od": "odisha", "or": "odisha", "as": "assam", "uk": "uttarakhand",
+    "hp": "himachal pradesh", "cg": "chhattisgarh", "ts": "telangana", "tg": "telangana", "wb": "west bengal",
+    "jammu": "jammu and kashmir", "kashmir": "jammu and kashmir", "tamil nadu india": "tamil nadu",
 }
+# Old/new names of the same territory: a PIN in one of these is not evidence of a wrong state.
+EQUIVALENT_STATES = [{"andhra pradesh", "telangana"}, {"jammu and kashmir", "ladakh"}]
 
 # First digit of a PIN code -> postal region (well-established, unlike finer prefixes).
 PIN_REGIONS = {
@@ -58,8 +65,14 @@ def norm_state(value) -> str | None:
     if not value:
         return None
     s = normalize(str(value))
+    s = re.sub(r"\b(state|region|india|ut|union territory)\b", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
     s = STATE_ALIASES.get(s, s)
     return s or None
+
+
+def same_state(a: str | None, b: str | None) -> bool:
+    return a == b or any(a in g and b in g for g in EQUIVALENT_STATES)
 
 
 def norm_city(value) -> str | None:
@@ -322,7 +335,8 @@ class Gazetteer:
             if in_state:
                 places = in_state
         best = max(places, key=lambda p: p.n)
-        others = [p.label for p in places if p is not best]
+        others = [p.label for p in places if p is not best and p.state in KNOWN_STATES and p.n >= 3
+                  and not same_state(p.state, best.state)]
         if others:
             how.append(f"There is also a '{key.title()}' in {', '.join(others)}; add the state to pick that one.")
         return best, how

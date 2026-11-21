@@ -42,12 +42,12 @@ print("PIN dir rows:", len(pins), "geocoded PINs:", len(finder.pin_dir.pins), "d
 
 # COMMAND ----------
 
-print("=== LOCATION CONFLICTS ===")
-c = f[f.coords_conflict]
-by_city = c.conflict_detail.str.contains(" from (?!its PIN)", regex=True)
-by_pin = c.conflict_detail.str.contains("from its PIN")
-print("total", len(c), "| city-based", int(by_city.sum()), "| PIN-based", int(by_pin.sum()),
-      "| both", int((by_city & by_pin).sum()))
+print("=== LOCATION VOTE ===")
+print(f.location_issue.value_counts(dropna=False).to_string())
+print(f.loc_quality.value_counts(dropna=False).to_string())
+print("corrupted rows:", int(f.corrupted.sum()), "| own website:", int(f.own_site.notna().sum()),
+      "| merged:", int(f.merge_reasons.map(bool).sum()), "| PIN/state mismatch:", int(f.pin_state_mismatch.sum()))
+c = f[f.location_issue.notna()]
 print("km_from_city percentiles (all with a value):",
       np.nanpercentile(f.km_from_city.dropna().astype(float), [50, 75, 90, 95, 98, 99]).round(1))
 pin_d = []
@@ -57,7 +57,7 @@ for r in f.itertuples():
         pin_d.append(float(carefinder.geo.haversine_km(r.lat, r.lon, p.lat, p.lon)))
 print("km from own PIN centre percentiles:", np.percentile(pin_d, [50, 75, 90, 95, 98, 99]).round(1), "n=", len(pin_d))
 print("PIN spread_km percentiles:", np.percentile([p.spread_km for p in finder.pin_dir.pins.values()], [50, 90, 99]).round(1))
-print(c[["name", "city", "state", "postcode", "lat", "lon", "conflict_detail"]].sample(25, random_state=1).to_string())
+print(c[["name", "city", "state", "postcode", "location_issue", "location_detail"]].sample(25, random_state=1).to_string())
 
 # COMMAND ----------
 
@@ -78,8 +78,9 @@ print(f.sort_values("n_claims", ascending=False)[["name", "kind", "capacity", "n
 
 # COMMAND ----------
 
-print("=== MERGED / DUPLICATES ===")
-print(f[f.merge_reasons.map(bool)][["name", "city", "state", "merge_reasons"]].head(15).to_string())
+print("=== MERGED / DUPLICATES / CORRUPTED ===")
+print(f[f.merge_reasons.map(bool)][["name", "city", "state", "merge_reasons"]].sample(15, random_state=2).to_string())
+print(f[f.corrupted][["name", "facility_type", "organization_type"]].head(8).to_string())
 print(f[f.dup_count > 0].sort_values("dup_group")[["name", "city", "postcode", "dup_group"]].head(15).to_string())
 
 # COMMAND ----------

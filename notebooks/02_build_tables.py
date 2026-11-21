@@ -27,13 +27,13 @@ spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}")
 # COMMAND ----------
 
 f = finder.facilities.copy()
-keep = ["id", "name", "kind", "facility_type", "address", "city", "district_n", "state", "postcode",
-        "lat", "lon", "coord_status", "loc_lat", "loc_lon", "loc_quality", "coords_conflict", "conflict_detail",
-        "pin_state_mismatch", "merge_reasons", "breadth_flag", "n_claims", "completeness", "dup_group", "dup_count",
-        "capacity", "num_doctors", "year_established", "specialties", "capability", "procedure", "equipment",
-        "description", "source_urls"]
-out = f[keep].rename(columns={"district_n": "district"})
-for c in ("merge_reasons", "specialties", "capability", "procedure", "equipment", "source_urls"):
+keep = ["id", "name", "kind", "facility_type", "address", "city", "district_n", "state", "state_n", "postcode",
+        "lat", "lon", "coord_status", "loc_lat", "loc_lon", "loc_quality", "location_issue", "location_detail",
+        "coord_shared_n", "pin_state_mismatch", "merge_reasons", "other_facilities", "corrupted", "own_site",
+        "n_claims", "completeness", "dup_group", "dup_count", "capacity", "num_doctors", "year_established",
+        "specialties", "capability", "procedure", "equipment", "description", "source_urls"]
+out = f[keep].rename(columns={"district_n": "district", "state_n": "state_resolved"})
+for c in ("merge_reasons", "other_facilities", "specialties", "capability", "procedure", "equipment", "source_urls"):
     out[c] = out[c].map(lambda v: json.dumps(list(v), ensure_ascii=False))
 for c in ("lat", "lon", "loc_lat", "loc_lon", "capacity", "num_doctors", "year_established"):
     out[c] = pd.to_numeric(out[c], errors="coerce")
@@ -69,8 +69,9 @@ comments = {
     },
     "facilities_scored": {
         "loc_quality": "exact = facility coordinates agree with its address; PIN area / city centre = approximated.",
-        "coords_conflict": "True when the facility's coordinates contradict its stated city or PIN code.",
+        "location_issue": "coords_fixed = coordinates contradicted city and PIN so the address was used; coords_conflict = unresolved; address_inconsistent = city or PIN disagrees.",
         "merge_reasons": "Signs the record merges more than one facility.",
+        "corrupted": "True when the row's columns look shifted (e.g. a number in the facility type column).",
     },
 }
 for table, cols in comments.items():

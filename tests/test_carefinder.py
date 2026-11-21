@@ -97,10 +97,27 @@ def test_pin_directory():
     assert res.results.iloc[0]["confidence_label"] == "High"
     # PINs come from India Post, with the district named.
     assert "Patna" in f.search("dialysis", "800020").location.label
-    # f3's Delhi coordinates contradict its own PIN as well as its city.
+    # f3's Delhi coordinates contradict both its city and its PIN, which agree with each other -> use the address.
     row = f.facilities.set_index("id").loc["f3"]
-    assert "PIN 800020" in row["conflict_detail"]
+    assert row["location_issue"] == "coords_fixed"
+    assert row["loc_quality"] == "PIN area"
     assert f.facilities.set_index("id").loc["f5", "district_n"] == "vaishali"
+
+
+def test_other_facility_claims_are_ignored():
+    from carefinder.names import other_facility, own_website, tokens
+    own = tokens("Aravind Eye Hospital")
+    assert other_facility("Madras Medical Mission, Chennai is listed as a referral hospital", own)
+    assert other_facility("Aravind Eye Hospital is listed in the Hyderabad directory", own) is None
+    assert other_facility("Robotic surgery at Fortis Memorial Research Institute", tokens("Fortis Hospital Anandapur"))
+    assert other_facility("Hip replacement at Fortis Hospital, Anandapur", tokens("Fortis Hospital Anandapur")) is None
+    assert own_website("Patna Dialysis Centre", ["https://www.justdial.com/x", "http://patnadialysis.com/"]) == "patnadialysis.com"
+
+
+def test_snippet_shows_the_match():
+    from carefinder.evidence import _snippet
+    long = "Specialties include " + ", ".join(f"Thing{i}" for i in range(40)) + ", Burns Management, Cardiology"
+    assert "Burns" in _snippet(long, "burns")
 
 
 def test_method_and_table(finder):

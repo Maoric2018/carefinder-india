@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from .evidence import (CORE_STRENGTH, FIELD_LABELS, FIELD_WEIGHTS, SPECIFIC_DETAIL_WEIGHT, SUPPORT_STRENGTH,
+from .evidence import (FIELD_LABELS, FIELD_WEIGHTS, LIST_STRENGTH, SPECIFIC_DETAIL_WEIGHT, SUPPORT_STRENGTH,
                        Evidence, score_evidence)
 from .geo import PinDirectory, ResolvedLocation, haversine_km
 from .quality import assess
@@ -19,13 +19,18 @@ from .taxonomy import SERVICES, Service, ad_hoc_service, find_service
 # Multipliers applied to the evidence score. Kept in one place so the "how we decided" text
 # shown to users is generated from the same numbers the code uses.
 TRUST = {
-    "location_conflict": (0.60, "its coordinates contradict its stated city or PIN code"),
-    "location_city": (0.90, "no usable coordinates, so distance is from its city centre"),
-    "location_pin": (0.88, "no usable coordinates, so distance is from its PIN area"),
-    "pin_state_mismatch": (0.85, "its PIN code belongs to a different region than its state"),
-    "merged": (0.80, "the record may merge more than one facility"),
-    "breadth": (0.85, "it claims an unusually long list of services for its size"),
-    "no_sources": (0.90, "no source URL to check against"),
+    "location_conflict": (0.60, "its location is contradictory"),
+    "location_fixed": (0.85, "its coordinates contradicted its address, so we placed it by its address instead"),
+    "address_inconsistent": (0.90, "its address is internally inconsistent"),
+    "location_shared": (0.95, "its coordinates are shared with other facilities (probably a city-centre placeholder)"),
+    "location_city": (0.90, "it has no usable coordinates, so distance is from its city centre"),
+    "location_pin": (0.92, "it has no usable coordinates, so distance is from its PIN area"),
+    "pin_state_mismatch": (0.85, "its PIN code belongs to a different state than the one listed"),
+    "merged": (0.75, "the record may merge more than one facility"),
+    "corrupted": (0.60, "the record's columns look shifted (corrupted row)"),
+    "foreign": (0.90, "some of its mentions of this service are about other facilities, so we ignored them"),
+    "no_sources": (0.90, "it has no source URL to check against"),
+    "no_own_site": (0.95, "none of its sources is the facility's own website"),
     "wrong_kind": (0.40, "it is listed as a pharmacy or dental practice"),
     "clinic": (0.80, "it looks like a clinic, and this service usually needs a hospital"),
     "too_small": (0.70, "its listed bed count is below what this service usually needs"),
@@ -88,20 +93,31 @@ class CareFinder:
             mult, reason = TRUST[key]
             f.append((mult, reason + (f" ({detail})" if detail else "")))
 
-        if row["coords_conflict"]:
-            add("location_conflict", row["conflict_detail"])
-        elif row["loc_quality"] == "city centre":
+        issue, quality = row["location_issue"], row["loc_quality"]
+        if issue == "coords_conflict":
+            add("location_conflict", row["location_detail"])
+        elif issue == "coords_fixed":
+            add("location_fixed", row["location_detail"])
+        elif issue == "address_inconsistent":
+            add("address_inconsistent", row["location_detail"])
+        elif quality == "shared coordinates":
+            add("location_shared", f"{row['coord_shared_n']} others")
+        elif quality == "city centre":
             add("location_city")
-        elif row["loc_quality"] in ("PIN area", "district centre"):
+        elif quality in ("PIN area", "district centre"):
             add("location_pin")
         if row["pin_state_mismatch"]:
             add("pin_state_mismatch", f"PIN {row['postcode']} vs {row['state']}")
         if row["merge_reasons"]:
             add("merged", "; ".join(row["merge_reasons"]))
-        if row["breadth_flag"]:
-            add("breadth", f"{row['n_claims']} items")
+        if row["corrupted"]:
+            add("corrupted")
+        if ev.foreign:
+            add("foreign", f"e.g. “{ev.foreign[0].snippet}”")
         if not row["source_urls"]:
             add("no_sources")
+        elif not row["own_site"]:
+            add("no_own_site")
         kind = row["kind"]
         if kind == "pharmacy" or (kind == "dental" and service.key != "dental"):
             add("wrong_kind", kind)
@@ -164,11 +180,21 @@ class CareFinder:
             notes.append(f"No facility within {limit:.0f} km claims {service.label.lower()}. "
                          "Showing the nearest ones further away.")
             within = cand.nsmallest(top_k * 3, "distance_km")
-        top = (within.sort_values("rank_score", ascending=False)
-                     .drop_duplicates("dup_group").head(top_k).reset_index(drop=True))
+        ranked = within.sort_values("rank_score", ascending=False).drop_duplicates("dup_group")
+        top = ranked.head(top_k)
+        # Always show the closest facility with strong evidence, even if the score put it just outside.
+        strong = ranked[ranked["confidence"] >= LABELS[0][0]]
+        if len(strong) and len(top) >= top_k:
+            closest_strong = strong.nsmallest(1, "distance_km")
+            if int(closest_strong["i"].iloc[0]) not in set(top["i"].astype(int)):
+                top = pd.concat([top.iloc[:-1], closest_strong]).sort_values("rank_score", ascending=False)
+                r = self._records[int(closest_strong["i"].iloc[0])]
+                notes.append(f"{r['name']} is included because it is the closest facility with strong evidence "
+                             f"({_km(float(closest_strong['distance_km'].iloc[0]))}).")
+        top = top.reset_index(drop=True)
 
         nearest = cand.nsmallest(1, "distance_km").iloc[0]
-        if nearest["i"] not in set(top["i"]):
+        if int(nearest["i"]) not in set(top["i"].astype(int)):
             r = self._records[int(nearest["i"])]
             ev = evs[int(nearest["i"])]
             notes.append(
@@ -183,14 +209,18 @@ class CareFinder:
         return result
 
     def _result_row(self, rank: int, t: dict, service: Service, loc: ResolvedLocation) -> dict:
-        r = self._records[t["i"]]
-        ev = self.evidence_for(service)[t["i"]]
+        i = int(t["i"])
+        r = self._records[i]
+        ev = self.evidence_for(service)[i]
         unknowns = [label for key, label in (("capacity", "bed count"), ("num_doctors", "number of doctors"),
                                               ("year_established", "year established")) if r[key] is None]
         if not r["equipment"]:
             unknowns.append("equipment list")
-        citations = [{"field": FIELD_LABELS[h.field], "kind": h.kind, "term": h.term, "text": h.snippet}
-                     for h in ev.hits]
+        citations = [{"field": FIELD_LABELS[h.field], "kind": h.kind, "term": h.term, "text": h.snippet,
+                      "listed": h.listed} for h in ev.hits]
+        sources = list(r["source_urls"])
+        if r["own_site"]:
+            sources.sort(key=lambda u: r["own_site"] not in u.lower())
         row = {
             "rank": rank, "id": r["id"], "name": r["name"] or "(unnamed facility)", "kind": r["kind"],
             "address": r["address"], "city": r["city"], "state": r["state"], "postcode": r["postcode"],
@@ -200,7 +230,7 @@ class CareFinder:
             "rank_score": round(t["rank_score"], 4),
             "evidence_fields": ", ".join(FIELD_LABELS[f] for f in ev.core_fields),
             "citations": citations, "caveats": [reason for _, reason in t["factors"]], "unknowns": unknowns,
-            "sources": list(r["source_urls"])[:5], "duplicates": int(r["dup_count"]),
+            "sources": sources[:5], "own_site": r["own_site"], "duplicates": int(r["dup_count"]),
             "capacity": r["capacity"], "num_doctors": r["num_doctors"], "year_established": r["year_established"],
             "phone": (r["phone"] or [None])[0], "website": (r["website"] or [None])[0],
         }
@@ -225,17 +255,23 @@ def explain(row: dict, ev: Evidence, factors, service: Service, loc: ResolvedLoc
     support = [c for c in row["citations"] if c["kind"] == "support"]
     n = len(ev.core_fields)
     lines.append(f"- Its record mentions {service.label.lower()} in {n} field{'s' if n != 1 else ''}:")
-    lines += [f'    - {c["field"]}: “{c["text"]}”' for c in core]
+    lines += [f'    - {c["field"]}: “{c["text"]}”' + (" _(inside a long list)_" if c.get("listed") else "")
+              for c in core[:6]]
     if support:
-        lines.append("- Related specialties/equipment: " + "; ".join(f'“{c["text"]}”' for c in support[:4]))
+        lines.append("- Related specialties/equipment: " + "; ".join(f'“{c["text"]}”' for c in support[:3]))
     if ev.specific:
         lines.append("- The claim includes concrete detail (counts, capacity or equipment brand), "
                      "which is harder to get wrong than a generic list entry.")
-    where = {"exact": "using the facility's own coordinates",
-             "city centre": ("measured from its stated city's centre, because its coordinates conflict with it"
-                             if any("contradict" in c for c in row["caveats"])
-                             else "measured from its city centre (no usable coordinates)"),
-             "PIN area": "measured from its PIN area (no usable coordinates)",
+    if ev.listed_only:
+        lines.append("- It only appears inside long lists of specialities, not in a dedicated statement, "
+                     "so it counts for less.")
+    if row.get("own_site"):
+        lines.append(f"- Its sources include the facility's own website ({row['own_site']}).")
+    where = {"exact": "using the facility's own coordinates, which match its address",
+             "unverified coordinates": "using the facility's own coordinates (no address data to cross-check)",
+             "shared coordinates": "using approximate coordinates shared with other facilities",
+             "city centre": "measured from its city centre",
+             "PIN area": "measured from the centre of its PIN code area",
              "district centre": "measured from its district centre",
              "conflicting coordinates": "using coordinates we could not confirm"}[row["location_quality"]]
     lines.append(f"- **{_km(row['distance_km'])}** from {loc.label}, {where}.")
@@ -272,10 +308,13 @@ def method_markdown(service: Service | None = None) -> str:
    related words (specialty, equipment, staff). Text saying the service is unavailable, planned or referred
    elsewhere is not counted. Each match is kept as a quote, so every claim can be checked.
 2. **Score the evidence (0–1).** Each field that names the service counts as a separate witness with weight
-   {weights}. A field with only related words counts at {SUPPORT_STRENGTH:.0%} of its weight, and concrete
-   detail (counts, bed numbers, equipment brands) adds {SPECIFIC_DETAIL_WEIGHT:.2f}. Combined as
-   1 − ∏(1 − weight), so being mentioned consistently in several places matters more than one mention.
-3. **Check whether we can trust the record.** The evidence score is multiplied by:
+   {weights}. A mention that only sits inside a long list of specialities counts at {LIST_STRENGTH:.0%}, a field
+   with only related words at {SUPPORT_STRENGTH:.0%}, and concrete detail (counts, bed numbers, equipment
+   brands) adds {SPECIFIC_DETAIL_WEIGHT:.2f}. Combined as 1 − ∏(1 − weight), so being mentioned consistently
+   in several places matters more than one mention. Sentences that describe a *different* hospital (records
+   often mix in text from directory pages) are ignored.
+3. **Check whether we can trust the record.** Location is checked by letting the facility's coordinates,
+   city and PIN code vote (two that agree win). The evidence score is then multiplied by:
 {penalties}
 4. **Confidence** = evidence × trust. Labels: {labels}, otherwise Low.
 5. **Rank** by confidence × proximity, where proximity = e^(−km ÷ distance scale). The distance scale
