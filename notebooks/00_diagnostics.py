@@ -11,9 +11,10 @@
 import importlib
 import numpy as np
 import pandas as pd
-import carefinder, carefinder.parse, carefinder.taxonomy, carefinder.evidence, carefinder.geo, carefinder.quality, carefinder.schema, carefinder.engine
-for m in (carefinder.parse, carefinder.taxonomy, carefinder.evidence, carefinder.geo, carefinder.quality,
-          carefinder.schema, carefinder.engine, carefinder):
+import carefinder, carefinder.parse, carefinder.taxonomy, carefinder.names, carefinder.evidence, carefinder.geo
+import carefinder.quality, carefinder.schema, carefinder.engine
+for m in (carefinder.parse, carefinder.taxonomy, carefinder.names, carefinder.evidence, carefinder.geo,
+          carefinder.quality, carefinder.schema, carefinder.engine, carefinder):
     importlib.reload(m)
 from carefinder import CareFinder
 
