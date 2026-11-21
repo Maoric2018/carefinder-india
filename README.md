@@ -65,10 +65,11 @@ CAREFINDER_LOCAL_CSV=tests/sample_facilities.csv CAREFINDER_LOCAL_PINS=tests/sam
 - **The state column is unreliable** ("Br", "Mumbai", "U P", "Kie"), so we take the state from the PIN directory.
   Only 43 records have a PIN in a different state from a valid listed state.
 - **Records mix in text about other hospitals** scraped from directory pages ("Madras Medical Mission, Chennai is
-  listed as a referral hospital…" inside Aravind Eye Hospital's record). Those sentences are excluded from evidence.
+  listed as a referral hospital…" inside Aravind Eye Hospital's record). Those sentences are excluded from evidence,
+  and 772 records (~8%) whose claims name 3+ other facilities are flagged as possible merged records.
 - **35 corrupted rows** with shifted columns (a latitude in `facilityTypeId`, a specialty list in
   `organization_type`), flagged and down-weighted.
-- **72% of facilities** have their own website among their sources, which we surface as a positive signal.
+- **71% of facilities** (7,198) have their own website among their sources, which we surface as a positive signal.
 - Facilities with a direct mention of each service range from 134 (burn care) and 150 (TB) up to
   ~1,050 (dialysis) and ~5,400 (pediatrics).
 
