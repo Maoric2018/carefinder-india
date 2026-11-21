@@ -179,6 +179,7 @@ def test_planner_coverage():
     assert placed.loc["Patna", "placed_by"] == "India Post district"
     assert placed.loc["Vaishali", "placed_by"] == "India Post district"
     assert placed.loc["Pashchim Champaran", "placed_by"] == "not placed"
+    assert f.pin_dir.dropped_far == 1 and "aurangabad" not in f.pin_dir.districts  # coords from another state
 
     dialysis = find_service("dialysis")[0]
     fac = facility_confidence(f, dialysis)

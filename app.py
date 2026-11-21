@@ -217,12 +217,14 @@ def coverage_deck(cov: pd.DataFrame, fac: pd.DataFrame) -> pdk.Deck:
         + (f" · need: {v:.1f}%" if v == v else "")
         for d, s, n, k, v in zip(pts["district"], pts["status"], pts["nearest_high"], pts["nearest_high_km"], pts["need_value"])]
     lats, lons = pts["lat"].astype(float), pts["lon"].astype(float)
-    mid_lat = (lats.max() + lats.min()) / 2
-    lon_span = max(lons.max() - lons.min(), 0.3)
-    lat_span = max(lats.max() - lats.min(), 0.3) / math.cos(math.radians(mid_lat))
+    lo_lat, hi_lat = lats.quantile(0.02), lats.quantile(0.98)  # robust to a stray district centre
+    lo_lon, hi_lon = lons.quantile(0.02), lons.quantile(0.98)
+    mid_lat = (hi_lat + lo_lat) / 2
+    lon_span = max(hi_lon - lo_lon, 0.3)
+    lat_span = max(hi_lat - lo_lat, 0.3) / math.cos(math.radians(mid_lat))
     zoom = max(3.4, min(9.0, min(math.log2(560 * 360 / (512 * 1.25 * lon_span)), math.log2(520 * 360 / (512 * 1.25 * lat_span)))))
-    near = fac[(fac["label"] == "High") & fac["lat"].between(lats.min() - 1.5, lats.max() + 1.5)
-               & fac["lon"].between(lons.min() - 1.5, lons.max() + 1.5)].copy() if len(fac) else fac
+    near = fac[(fac["label"] == "High") & fac["lat"].between(lo_lat - 1.5, hi_lat + 1.5)
+               & fac["lon"].between(lo_lon - 1.5, hi_lon + 1.5)].copy() if len(fac) else fac
     if len(near):
         near["tip"] = "Well-documented: " + near["name"].astype(str)
     layers = [
@@ -234,7 +236,7 @@ def coverage_deck(cov: pd.DataFrame, fac: pd.DataFrame) -> pdk.Deck:
         layers.append(pdk.Layer("ScatterplotLayer", near, get_position="[lon, lat]", get_radius=1, radius_min_pixels=3.5,
                                 get_fill_color=[15, 23, 42, 230], pickable=True))
     return pdk.Deck(layers=layers, map_provider="carto", map_style="light",
-                    initial_view_state=pdk.ViewState(latitude=mid_lat, longitude=(lons.max() + lons.min()) / 2, zoom=zoom),
+                    initial_view_state=pdk.ViewState(latitude=mid_lat, longitude=(hi_lon + lo_lon) / 2, zoom=zoom),
                     tooltip={"text": "{tip}"})
 
 

@@ -17,6 +17,9 @@ from .taxonomy import normalize
 
 INDIA_LAT = (6.5, 37.6)
 INDIA_LON = (68.0, 97.5)
+# A post office this far from the median of its state's post offices carries another place's coordinates
+# (e.g. Aurangabad, Bihar geocoded to Aurangabad, Maharashtra). The largest states span ~500 km from their centre.
+STATE_OUTLIER_KM = 700
 
 STATE_ALIASES = {
     "orissa": "odisha", "uttaranchal": "uttarakhand", "pondicherry": "puducherry", "pondy": "puducherry",
@@ -163,6 +166,15 @@ class PinDirectory:
                  for a, b in zip(df["lat"], df["lon"])]
         df["lat"] = [f[0] for f in fixed]
         df["lon"] = [f[1] for f in fixed]
+        self.dropped_far = 0
+        ok = df["lat"].notna() & df["lon"].notna() & df["state"].notna()
+        if ok.any():
+            pts = df.loc[ok, ["state", "lat", "lon"]].astype({"lat": float, "lon": float})
+            centre = pts.groupby("state")[["lat", "lon"]].median()
+            pts = pts.join(centre.add_suffix("_state"), on="state")
+            far = haversine_km(pts["lat"], pts["lon"], pts["lat_state"], pts["lon_state"]) > STATE_OUTLIER_KM
+            df.loc[pts.index[far], ["lat", "lon"]] = None
+            self.dropped_far = int(far.sum())
         self.rows = df
         geo = df.dropna(subset=["lat", "lon"]).astype({"lat": float, "lon": float})
 

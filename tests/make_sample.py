@@ -94,6 +94,7 @@ def sample_pins() -> pd.DataFrame:
         ("Gaya H.O", "823001", "HO", "GAYA", "BIHAR", 24.791, 85.000),
         ("Remote B.O", "803999", "BO", "PATNA", "BIHAR", "NA", "NA"),
         ("Mumbai G.P.O", "400001", "PO", "MUMBAI", "MAHARASHTRA", 18.938, 72.835),
+        ("Aurangabad H.O", "824101", "HO", "AURANGABAD", "BIHAR", 19.880, 75.340),  # wrong: Maharashtra coords
     ]
     return pd.DataFrame(rows, columns=["officename", "pincode", "officetype", "district", "statename",
                                        "latitude", "longitude"])
