@@ -211,7 +211,8 @@ def reset_need():
 def coverage_deck(cov: pd.DataFrame, fac: pd.DataFrame) -> pdk.Deck:
     pts = cov.dropna(subset=["lat", "lon"]).copy()
     pts["color"] = pts["status"].map(lambda s: STATUS[s][4] + [215])
-    pts["radius"] = 7 + 15 * pts["need_pct"].fillna(0.3)
+    big = len(pts) > 80  # whole country: smaller circles so districts don't pile up
+    pts["radius"] = (3 + 7 * pts["need_pct"].fillna(0.3)) if big else (7 + 15 * pts["need_pct"].fillna(0.3))
     pts["tip"] = [
         f"{d} · {STATUS[s][0]}" + (f" · nearest well-documented: {n} ({k:.0f} km)" if isinstance(n, str) else "")
         + (f" · need: {v:.1f}%" if v == v else "")

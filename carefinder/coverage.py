@@ -84,12 +84,23 @@ RENAMED = {
     "barddhaman": "bardhaman", "haora": "howrah", "hugli": "hooghly", "maldah": "malda", "puruliya": "purulia",
     "darjiling": "darjeeling", "koch bihar": "cooch behar", "kancheepuram": "kanchipuram", "thoothukkudi": "tuticorin",
     "tiruvallur": "thiruvallur", "the nilgiris": "nilgiris", "viluppuram": "villupuram", "sivaganga": "sivagangai",
+    "mumbai suburban": "mumbai", "kamrup metropolitan": "kamrup metro", "north 24 pargana": "north 24 parganas",
+    "south 24 pargana": "south 24 parganas", "dakshin dinajpur": "south dinajpur", "uttar dinajpur": "north dinajpur",
 }
+NUMBERS = {"twenty four": "24", "twenty-four": "24"}
+PREFIX_RENAMES = (("sri potti sriramulu", "nellore"), ("y s r", "kadapa"), ("north twenty", "north 24 parganas"),
+                  ("south twenty", "south 24 parganas"), ("sant ravidas", "bhadohi"))
 
 
 def _variants(name: str) -> list[str]:
-    base = norm_city(re.sub(r"[()&]", " ", name or "")) or ""
+    raw = (name or "").lower()
+    for words, digits in NUMBERS.items():
+        raw = raw.replace(words, digits)
+    base = norm_city(re.sub(r"[()&]", " ", raw)) or ""
     out = [base]
+    for prefix, target in PREFIX_RENAMES:
+        if base.startswith(prefix):
+            out.append(target)
     words = base.split()
     translated = " ".join(DIRECTIONS.get(w, w) for w in words)
     out.append(translated)
@@ -144,11 +155,18 @@ def place_districts(nfhs: pd.DataFrame, finder: CareFinder) -> pd.DataFrame:
                            default=(0, None))
                 if best[0] >= 0.82:
                     found = (pool[best[1]], f"India Post district (≈ {best[1].title()})")
-        if found is None:
+        # Fallbacks when India Post has no usable coordinates for the district: district names in facility
+        # addresses, a town of the same name, then a post office of the same name.
+        fallbacks = [(gaz.by_district, "district in facility addresses"), (gaz.by_city, "city centre (facility addresses)")]
+        if pin_dir is not None:
+            fallbacks.append((pin_dir.offices, "post office of the same name"))
+        for index, label in fallbacks:
+            if found is not None:
+                break
             for v in variants:
-                cands = [p for p in gaz.by_city.get(v, []) if same_state(p.state, state)]
+                cands = [p for p in index.get(v, []) if same_state(p.state, state)]
                 if cands:
-                    found = (max(cands, key=lambda p: p.n), "city centre (facility addresses)")
+                    found = (max(cands, key=lambda p: p.n), label)
                     break
         lats.append(found[0].lat if found else None)
         lons.append(found[0].lon if found else None)
