@@ -65,7 +65,7 @@ SERVICE_NEED = {
 DEFAULT_NEED = ("insurance",)
 
 # NFHS-5 uses Census-2011 names; India Post often uses newer or English ones.
-DIRECTIONS = {"pashchim": "west", "paschim": "west", "purba": "east", "purbi": "east", "purab": "east",
+DIRECTIONS = {"pashchim": "west", "paschim": "west", "pashchimi": "west", "purba": "east", "purbi": "east", "purab": "east",
               "uttar": "north", "dakshin": "south", "dakshina": "south", "madhya": "central"}
 RENAMED = {
     "belgaum": "belagavi", "bijapur": "vijayapura", "gulbarga": "kalaburagi", "bellary": "ballari", "mysore": "mysuru",
@@ -84,7 +84,9 @@ RENAMED = {
     "barddhaman": "bardhaman", "haora": "howrah", "hugli": "hooghly", "maldah": "malda", "puruliya": "purulia",
     "darjiling": "darjeeling", "koch bihar": "cooch behar", "kancheepuram": "kanchipuram", "thoothukkudi": "tuticorin",
     "tiruvallur": "thiruvallur", "the nilgiris": "nilgiris", "viluppuram": "villupuram", "sivaganga": "sivagangai",
-    "mumbai suburban": "mumbai", "kamrup metropolitan": "kamrup metro", "north 24 pargana": "north 24 parganas",
+    "mumbai suburban": "mumbai", "kamrup metropolitan": "kamrup metro", "dhaulpur": "dholpur", "garhwal": "pauri garhwal",
+    "uttar bastar kanker": "kanker", "dakshin bastar dantewada": "dantewada", "koriya": "korea", "badaun": "budaun",
+    "bara banki": "barabanki", "mahrajganj": "maharajganj", "siddharthnagar": "siddharth nagar", "sant kabir nagar": "sant kabir nagar", "north 24 pargana": "north 24 parganas",
     "south 24 pargana": "south 24 parganas", "dakshin dinajpur": "south dinajpur", "uttar dinajpur": "north dinajpur",
 }
 NUMBERS = {"twenty four": "24", "twenty-four": "24"}
@@ -98,6 +100,8 @@ def _variants(name: str) -> list[str]:
         raw = raw.replace(words, digits)
     base = norm_city(re.sub(r"[()&]", " ", raw)) or ""
     out = [base]
+    if "(" in raw:  # "Khandwa (East Nimar)" -> "khandwa", "east nimar"
+        out += [norm_city(raw.split("(")[0]) or "", norm_city(raw.split("(")[1].split(")")[0]) or ""]
     for prefix, target in PREFIX_RENAMES:
         if base.startswith(prefix):
             out.append(target)

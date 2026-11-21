@@ -176,6 +176,7 @@ def test_planner_coverage():
     assert "belagavi" in _variants("Belgaum")
     assert "north 24 parganas" in _variants("North Twenty Four Pargana")
     assert "nellore" in _variants("Sri Potti Sriramulu Nello")
+    assert "khandwa" in _variants("Khandwa (East Nimar)") and "west singhbhum" in _variants("Pashchimi Singhbhum")
 
     placed = place_districts(nfhs, f).set_index("district")
     assert placed.loc["Patna", "placed_by"] == "India Post district"
