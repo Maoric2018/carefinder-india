@@ -54,6 +54,8 @@ div[data-testid="stForm"] { background:#fff; border:1px solid #E5E7EB; border-ra
 .stButton > button:hover { border-color:#0F766E; color:#0F766E; background:#F0FDFA; }
 div[data-testid="stFormSubmitButton"] > button { border-radius:12px; background:#0F766E; color:#fff; border:none; font-weight:700; padding:8px 26px; font-size:15px; }
 div[data-testid="stFormSubmitButton"] > button:hover { background:#0B5F59; color:#fff; }
+div[data-testid="stFormSubmitButton"] > button:focus, div[data-testid="stFormSubmitButton"] > button:active,
+div[data-testid="stFormSubmitButton"] > button:focus:not(:active) { background:#0F766E; color:#fff !important; border:none; }
 .cf-results-h { font-size:26px; font-weight:800; letter-spacing:-.02em; margin:26px 0 8px; color:#0F172A; }
 .cf-chips { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
 .cf-chip { display:inline-flex; align-items:center; gap:6px; background:#fff; border:1px solid #E5E7EB; border-radius:999px; padding:5px 12px; font-size:13px; color:#334155; }
