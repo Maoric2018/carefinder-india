@@ -328,7 +328,7 @@ else:
                 with st.expander(f"Full evidence, sources and unknowns for {r.name}"):
                     st.markdown(r.explanation)
         with right:
-            st.pydeck_chart(deck(results, loc), height=430)
+            st.pydeck_chart(deck(results, loc), use_container_width=True)  # no height kwarg on Streamlit 1.38
             st.markdown(
                 '<div class="cf-legend"><span><i style="background:#2563EB"></i>Patient</span>'
                 '<span><i style="background:#047857"></i>High</span><span><i style="background:#D97706"></i>Medium</span>'
