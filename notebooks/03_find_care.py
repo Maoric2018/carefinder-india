@@ -26,15 +26,11 @@ except NameError:
 
 # COMMAND ----------
 
-import html
+from carefinder.render import md_to_html
 
 
 def show_md(text):
-    try:
-        import markdown
-        displayHTML(markdown.markdown(text))
-    except ImportError:
-        displayHTML(f"<pre style='white-space:pre-wrap;font-family:inherit'>{html.escape(text)}</pre>")
+    displayHTML(md_to_html(text))
 
 
 res = finder.search(dbutils.widgets.get("service"), dbutils.widgets.get("location"),

@@ -55,6 +55,29 @@ CAREFINDER_LOCAL_CSV=tests/sample_facilities.csv CAREFINDER_LOCAL_PINS=tests/sam
    `sql-warehouse`; set `FACILITY_TABLE` / `PIN_TABLE` in `app.yaml` to the names notebook 01 prints; grant the
    app's service principal `SELECT` on the Marketplace catalog.
 
+## What we found in the real data (10,088 facilities, 51 columns)
+
+- **List fields are JSON arrays of whole sentences** ("Dialysis treatment is provided via a 20-bed Dialysis Unit
+  with 10 machines as part of the Pradhan Mantri National Dialysis Programme"), which makes them good citations.
+- **Location is often contradictory.** Coordinates are >90 km from their own city for ~10% of records. Letting
+  coordinates, city and PIN vote: 80% consistent · 591 coordinates corrected from the address (city + PIN agree) ·
+  743 addresses internally inconsistent (a wrong PIN or city) · 677 unresolved · 88 with no location.
+- **The state column is unreliable** ("Br", "Mumbai", "U P", "Kie"), so we take the state from the PIN directory.
+  Only 43 records have a PIN in a different state from a valid listed state.
+- **Records mix in text about other hospitals** scraped from directory pages ("Madras Medical Mission, Chennai is
+  listed as a referral hospital…" inside Aravind Eye Hospital's record). Those sentences are excluded from evidence.
+- **35 corrupted rows** with shifted columns (a latitude in `facilityTypeId`, a specialty list in
+  `organization_type`), flagged and down-weighted.
+- **72% of facilities** have their own website among their sources, which we surface as a positive signal.
+- Facilities with a direct mention of each service range from 134 (burn care) and 150 (TB) up to
+  ~1,050 (dialysis) and ~5,400 (pediatrics).
+
+## Live on Databricks Free Edition
+
+- Git folder: `/Workspace/Users/<you>/carefinder-india` (synced from this repo)
+- Tables: `workspace.carefinder.facilities_scored`, `facility_service_evidence` (42,515 rows), `services`
+- App: `carefinder-india` (Compute → Apps), reading the Marketplace tables through the Serverless Starter Warehouse
+
 ## Still to do
 
 - Check the column mapping and the quality-check thresholds against the real data.

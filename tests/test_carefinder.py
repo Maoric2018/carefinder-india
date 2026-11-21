@@ -126,6 +126,12 @@ def test_snippet_shows_the_match():
     assert "Burns" in _snippet(long, "burns")
 
 
+def test_render(finder):
+    from carefinder.render import md_to_html
+    page = md_to_html(finder.search("dialysis", "Patna").to_markdown())
+    assert "<h4>" in page and "<b>" in page and "<li>" in page and "**" not in page
+
+
 def test_method_and_table(finder):
     assert "How we decide" in method_markdown()
     table = evidence_table(finder)
