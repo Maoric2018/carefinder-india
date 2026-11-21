@@ -99,6 +99,24 @@ def sample_pins() -> pd.DataFrame:
                                        "latitude", "longitude"])
 
 
+def sample_nfhs() -> pd.DataFrame:
+    """Imitates nfhs_5_district_health_indicators (a few of its 109 columns, real column names, made-up values)."""
+    cols = ["district_name", "state_ut", "institutional_birth_5y_pct", "births_delivered_by_csection_5y_pct",
+            "mothers_who_had_at_least_4_anc_visits_lb5y_pct", "hh_member_covered_health_insurance_pct",
+            "w15_plus_with_high_or_very_high_gt_140_mg_dl_blood_sugar_or_pct",
+            "m15_plus_with_high_or_very_high_gt_140_mg_dl_blood_sugar_or_pct",
+            "w15_plus_with_high_bp_sys_gte_140_mmhg_and_or_dia_gte_90_mm_pct",
+            "m15_plus_with_high_bp_sys_gte_140_mmhg_and_or_dia_gte_90_mm_pct"]
+    rows = [
+        ("Patna", "Bihar", 84.1, 15.2, 40.3, 12.0, 14.0, 16.0, 18.0, 22.0),
+        ("Vaishali", "Bihar", 79.0, 9.8, 30.1, 10.5, 12.5, 15.5, 17.0, 20.0),
+        ("Gaya", "Bihar", 76.5, 7.1, 28.0, 9.0, 13.0, 17.0, 16.0, 21.0),
+        ("Pashchim Champaran", "Bihar", 70.2, 4.9, 19.5, 6.0, 11.0, 13.0, 15.0, 18.0),
+        ("Mumbai", "Maharashtra", 98.0, 38.0, 80.0, 30.0, 15.0, 17.0, 20.0, 24.0),
+    ]
+    return pd.DataFrame(rows, columns=cols)
+
+
 def sample_frame() -> pd.DataFrame:
     df = pd.DataFrame(ROWS)
     for col in ("specialties", "capability", "procedure", "equipment", "source_urls"):
@@ -110,4 +128,5 @@ if __name__ == "__main__":
     here = Path(__file__).parent
     sample_frame().to_csv(here / "sample_facilities.csv", index=False)
     sample_pins().to_csv(here / "sample_pins.csv", index=False)
-    print(f"wrote sample_facilities.csv and sample_pins.csv in {here}")
+    sample_nfhs().to_csv(here / "sample_nfhs.csv", index=False)
+    print(f"wrote sample_facilities.csv, sample_pins.csv and sample_nfhs.csv in {here}")

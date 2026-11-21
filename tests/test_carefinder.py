@@ -159,3 +159,39 @@ def test_places_and_sql():
     assert (places["name"] == "bombay").any()  # alias rows
     sql = find_care_sql("workspace.carefinder")
     assert "workspace.carefinder.places" in sql and "find_care" in sql
+
+
+def test_planner_coverage():
+    from carefinder import find_service
+    from carefinder.coverage import (INDICATORS, _variants, audit_summary, coverage, facility_confidence,
+                                     place_districts, prepare_nfhs)
+    from make_sample import sample_nfhs
+
+    f = CareFinder(sample_frame(), pin_directory=sample_pins())
+    nfhs = prepare_nfhs(sample_nfhs())
+    assert nfhs.loc[0, "state"] == "bihar"
+    assert nfhs.loc[0, "sugar"] == pytest.approx(15.0)  # women and men averaged
+    assert nfhs["vaccinated"].isna().all()  # column not in this table -> NaN, not an error
+    assert "west champaran" in _variants("Pashchim Champaran")
+    assert "belagavi" in _variants("Belgaum")
+
+    placed = place_districts(nfhs, f).set_index("district")
+    assert placed.loc["Patna", "placed_by"] == "India Post district"
+    assert placed.loc["Vaishali", "placed_by"] == "India Post district"
+    assert placed.loc["Pashchim Champaran", "placed_by"] == "not placed"
+
+    dialysis = find_service("dialysis")[0]
+    fac = facility_confidence(f, dialysis)
+    assert (fac["label"] == "High").any()
+    cov = coverage(placed.reset_index(), fac, dialysis, "sugar").set_index("district")
+    assert cov.loc["Patna", "status"] == "covered"
+    assert cov.loc["Vaishali", "status"] == "covered"  # Hajipur is ~10 km from Patna's dialysis hospital
+    assert cov.loc["Gaya", "status"] in ("gap", "weak evidence only")
+    assert cov.loc["Gaya", "nearest_high_km"] > dialysis.travel_km
+    assert cov.loc["Pashchim Champaran", "status"] == "not placed"
+    # gaps come first
+    assert list(coverage(placed.reset_index(), fac, dialysis, "sugar")["status"])[0] != "covered"
+    assert set(INDICATORS) >= {"csection", "sugar", "bp", "insurance"}
+
+    audit = audit_summary(f)
+    assert audit["records"] == len(f.facilities) and audit["location_fixed"] + audit["location_conflict"] >= 1

@@ -14,10 +14,11 @@ a **confidence label**, the **caveats** that lowered it, and a plain-language **
 | `carefinder/quality.py` | Record trust: coordinates vs city/PIN, merged records, facility type, claim lists too long for the facility's size, duplicates |
 | `carefinder/geo.py` | Location lookup from the India Post PIN directory + facility data (no external geocoder) |
 | `carefinder/engine.py` | Ranking, explanations, method text, facility × service evidence table |
+| `carefinder/coverage.py` | Planner view: NFHS-5 district need × where well-documented care is (district centres from India Post) |
 | `notebooks/01_explore_data.py` | Profile the real data, check the column mapping, count data-quality problems |
 | `notebooks/02_build_tables.py` | Write `facilities_scored`, `facility_service_evidence`, `services` Delta tables (for Genie / dashboards) |
 | `notebooks/03_find_care.py` | Widget-driven demo: pick a service, type a place, Run all |
-| `app.py`, `app.yaml` | Streamlit Databricks App for non-technical users |
+| `app.py`, `app.yaml` | Streamlit Databricks App: **Find care** (one patient) and **Plan coverage** (districts) tabs |
 | `tests/` | Synthetic messy data + tests (`make_sample.py` is NOT real data) |
 
 ## How a recommendation is scored
@@ -40,7 +41,7 @@ uv run --with pandas --with numpy --with pytest python -m pytest tests -q
 ```
 
 ```bash
-CAREFINDER_LOCAL_CSV=tests/sample_facilities.csv CAREFINDER_LOCAL_PINS=tests/sample_pins.csv uv run --with streamlit --with pandas --with numpy streamlit run app.py
+CAREFINDER_LOCAL_CSV=tests/sample_facilities.csv CAREFINDER_LOCAL_PINS=tests/sample_pins.csv CAREFINDER_LOCAL_NFHS=tests/sample_nfhs.csv uv run --with streamlit==1.38.0 --with pandas --with numpy streamlit run app.py
 ```
 
 ## Run on Databricks Free Edition
@@ -73,6 +74,21 @@ CAREFINDER_LOCAL_CSV=tests/sample_facilities.csv CAREFINDER_LOCAL_PINS=tests/sam
 - Facilities with a direct mention of each service range from 134 (burn care) and 150 (TB) up to
   ~1,050 (dialysis) and ~5,400 (pediatrics).
 
+## Plan coverage (for planners)
+
+The app's second tab joins all three Marketplace tables. For a service and a state it places every NFHS-5 district
+at the centre of its India Post post offices (Census-2011 names such as "Pashchim Champaran" are matched to India
+Post names through direction words, known renames and fuzzy matching), then marks it:
+
+- **Covered**: a High-confidence facility for the service within the service's travel scale (the ranking's scale),
+- **Only weak claims**: only Medium-confidence ones within that distance,
+- **Gap**: neither. A gap means no well-documented claim in this dataset, not proof the service is missing.
+
+Districts are listed gaps first, then by need, using the NFHS-5 indicator that fits the service (C-section rate for
+emergency C-sections, institutional births for NICU/maternity, high blood sugar for dialysis, high blood pressure for
+cardiac care, cervical screening for cancer, health insurance otherwise). The tab also summarises what the data
+checks found across all 10,088 records.
+
 ## Live on Databricks Free Edition
 
 - Git folder: `/Workspace/Users/<you>/carefinder-india` (synced from this repo)
@@ -91,5 +107,4 @@ CAREFINDER_LOCAL_CSV=tests/sample_facilities.csv CAREFINDER_LOCAL_PINS=tests/sam
 
 - Check the column mapping and the quality-check thresholds against the real data.
 - Spot-check 20 recommendations by hand (open their source URLs) and tune the weights.
-- Optional: NFHS-5 district context (e.g. district C-section rate) for planners.
 - Demo script: rural Bihar dialysis, Maharashtra high-risk delivery, highway trauma.

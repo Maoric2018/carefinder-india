@@ -15,12 +15,22 @@ import pydeck as pdk
 import streamlit as st
 
 from carefinder import SERVICES, CareFinder
+from carefinder.coverage import (DEFAULT_NEED, INDICATORS, SERVICE_NEED, audit_summary, coverage, facility_confidence,
+                                 place_districts, prepare_nfhs)
 from carefinder.engine import method_markdown
 
 st.set_page_config(page_title="CareFinder India", page_icon="🩺", layout="wide")
 
 FACILITY_TABLE = os.getenv("FACILITY_TABLE", "")
 PIN_TABLE = os.getenv("PIN_TABLE", "")
+NFHS_TABLE = os.getenv("NFHS_TABLE", "")
+BY_LABEL = {s.label: s for s in SERVICES.values()}
+STATUS = {  # status -> (label, text colour, background, border, map RGB)
+    "gap": ("No well-documented option", "#B91C1C", "#FEF2F2", "#FECACA", [220, 38, 38]),
+    "weak evidence only": ("Only weak claims", "#B45309", "#FFFBEB", "#FDE68A", [217, 119, 6]),
+    "covered": ("Covered", "#047857", "#ECFDF5", "#A7F3D0", [4, 120, 87]),
+    "not placed": ("Not on map", "#475569", "#F1F5F9", "#E2E8F0", [148, 163, 184]),
+}
 LABELS = [s.label for s in SERVICES.values()]
 EXAMPLES = [  # (service, place, button label)
     ("Dialysis", "Bakhtiyarpur, Bihar", "Dialysis · Bakhtiyarpur"),
@@ -109,6 +119,28 @@ div[data-testid="stFormSubmitButton"] > button:focus:not(:active) { background:#
 .cf-formula { margin-top:12px; text-align:center; font-size:17px; font-weight:700; color:#0F172A; background:#fff; border:1px dashed #CBD5E1; border-radius:14px; padding:12px; }
 .cf-formula span { color:#0F766E; }
 .cf-foot { margin-top:30px; font-size:12px; color:#94A3B8; text-align:center; }
+div[data-testid="stTabs"] button[role="tab"] p { font-size:16px; font-weight:700; }
+div[data-testid="stTabs"] [data-baseweb="tab-list"] { gap:18px; margin-top:10px; }
+.cf-intro { font-size:14.5px; color:#475569; margin:0 0 10px; line-height:1.5; }
+.cf-kpis { display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; margin:14px 0 6px; }
+.cf-kpi { background:#fff; border:1px solid #E5E7EB; border-radius:14px; padding:12px 14px; }
+.cf-kpi b { display:block; font-size:24px; font-weight:800; color:#0F172A; letter-spacing:-.02em; line-height:1.15; }
+.cf-kpi b.red { color:#B91C1C; }
+.cf-kpi b.sm { font-size:19px; }
+.cf-kpi span { display:block; font-size:12.5px; color:#64748B; margin-top:4px; line-height:1.35; }
+.cf-prow { display:flex; align-items:center; gap:12px; padding:10px 2px; border-top:1px solid #F1F5F9; }
+.cf-prow:first-child { border-top:none; }
+.cf-prow .n { width:26px; height:26px; border-radius:8px; color:#fff; font-size:12.5px; font-weight:800; display:flex; align-items:center; justify-content:center; flex:none; }
+.cf-prow .d { flex:1; min-width:0; }
+.cf-prow .d b { font-size:15px; color:#0F172A; }
+.cf-prow .d small { display:block; font-size:12.5px; color:#64748B; margin-top:2px; line-height:1.35; }
+.cf-prow .need { width:150px; flex:none; font-size:12px; color:#475569; text-align:right; }
+.cf-prow .need .cf-bar { margin-top:4px; }
+.cf-st { display:inline-block; vertical-align:2px; margin-left:6px; font-size:11px; font-weight:700; border:1px solid; border-radius:999px; padding:1px 8px; }
+.cf-audit { display:grid; grid-template-columns: repeat(6, 1fr); gap:10px; margin-top:8px; }
+.cf-audit div { background:#fff; border:1px solid #E5E7EB; border-radius:12px; padding:10px 12px; }
+.cf-audit b { display:block; font-size:20px; font-weight:800; color:#0F172A; }
+.cf-audit span { font-size:12px; color:#64748B; line-height:1.3; display:block; margin-top:2px; }
 </style>
 """
 
@@ -143,6 +175,173 @@ def load_finder() -> CareFinder:
     pins = _query(f"SELECT officename, pincode, district, statename, latitude, longitude FROM {PIN_TABLE}") \
         if PIN_TABLE else None
     return CareFinder(raw, pin_directory=pins)
+
+
+@st.cache_resource(show_spinner="Joining NFHS-5 district health indicators and placing every district…")
+def load_districts(_finder: CareFinder) -> pd.DataFrame | None:
+    local = os.getenv("CAREFINDER_LOCAL_NFHS")
+    if local:
+        raw = pd.read_csv(local)
+    elif NFHS_TABLE:
+        raw = _query(f"SELECT * FROM {NFHS_TABLE}")
+    else:
+        return None
+    return place_districts(prepare_nfhs(raw), _finder)
+
+
+@st.cache_data(show_spinner=False)
+def facilities_for(service_key: str) -> pd.DataFrame:
+    return facility_confidence(finder, SERVICES[service_key])
+
+
+@st.cache_data(show_spinner=False)
+def audit() -> dict:
+    return audit_summary(finder)
+
+
+def need_options(service_key: str) -> list[str]:
+    first = list(SERVICE_NEED.get(service_key, DEFAULT_NEED))
+    return first + [k for k in INDICATORS if k not in first]
+
+
+def reset_need():
+    st.session_state.plan_need = need_options(BY_LABEL[st.session_state.plan_service].key)[0]
+
+
+def coverage_deck(cov: pd.DataFrame, fac: pd.DataFrame) -> pdk.Deck:
+    pts = cov.dropna(subset=["lat", "lon"]).copy()
+    pts["color"] = pts["status"].map(lambda s: STATUS[s][4] + [215])
+    pts["radius"] = 7 + 15 * pts["need_pct"].fillna(0.3)
+    pts["tip"] = [
+        f"{d} · {STATUS[s][0]}" + (f" · nearest well-documented: {n} ({k:.0f} km)" if isinstance(n, str) else "")
+        + (f" · need: {v:.1f}%" if v == v else "")
+        for d, s, n, k, v in zip(pts["district"], pts["status"], pts["nearest_high"], pts["nearest_high_km"], pts["need_value"])]
+    lats, lons = pts["lat"].astype(float), pts["lon"].astype(float)
+    mid_lat = (lats.max() + lats.min()) / 2
+    lon_span = max(lons.max() - lons.min(), 0.3)
+    lat_span = max(lats.max() - lats.min(), 0.3) / math.cos(math.radians(mid_lat))
+    zoom = max(3.4, min(9.0, min(math.log2(560 * 360 / (512 * 1.25 * lon_span)), math.log2(520 * 360 / (512 * 1.25 * lat_span)))))
+    near = fac[(fac["label"] == "High") & fac["lat"].between(lats.min() - 1.5, lats.max() + 1.5)
+               & fac["lon"].between(lons.min() - 1.5, lons.max() + 1.5)].copy() if len(fac) else fac
+    if len(near):
+        near["tip"] = "Well-documented: " + near["name"].astype(str)
+    layers = [
+        pdk.Layer("ScatterplotLayer", pts, get_position="[lon, lat]", get_radius="radius", radius_units="'pixels'",
+                  get_fill_color="color", get_line_color=[255, 255, 255], line_width_min_pixels=1.5, stroked=True,
+                  pickable=True),
+    ]
+    if len(near):
+        layers.append(pdk.Layer("ScatterplotLayer", near, get_position="[lon, lat]", get_radius=1, radius_min_pixels=3.5,
+                                get_fill_color=[15, 23, 42, 230], pickable=True))
+    return pdk.Deck(layers=layers, map_provider="carto", map_style="light",
+                    initial_view_state=pdk.ViewState(latitude=mid_lat, longitude=(lons.max() + lons.min()) / 2, zoom=zoom),
+                    tooltip={"text": "{tip}"})
+
+
+def planner(districts: pd.DataFrame | None):
+    st.markdown('<div class="cf-label">Plan coverage</div><p class="cf-intro">For NGO coordinators and district '
+                'planners: where is well-documented care missing, and where is the need highest? Need comes from '
+                'India\'s National Family Health Survey (NFHS-5, 2019-21), district by district.</p>',
+                unsafe_allow_html=True)
+    if districts is None:
+        st.info("The planner needs the NFHS-5 district table (set NFHS_TABLE).")
+        return
+    states = sorted(districts["state_label"].dropna().unique())
+    st.session_state.setdefault("plan_service", "Emergency C-section")
+    st.session_state.setdefault("plan_state", "Bihar" if "Bihar" in states else states[0])
+    st.session_state.setdefault("plan_need", need_options(BY_LABEL[st.session_state.plan_service].key)[0])
+    c1, c2, c3 = st.columns([1.1, 0.9, 1.4])
+    c1.selectbox("Service", LABELS, key="plan_service", on_change=reset_need)
+    c2.selectbox("State or union territory", ["All India"] + states, key="plan_state")
+    service = BY_LABEL[st.session_state.plan_service]
+    c3.selectbox("Need indicator (NFHS-5)", need_options(service.key), key="plan_need",
+                 format_func=lambda k: INDICATORS[k].label)
+    need = INDICATORS[st.session_state.plan_need]
+    state = st.session_state.plan_state
+
+    fac = facilities_for(service.key)
+    pool = districts if state == "All India" else districts[districts["state_label"] == state]
+    cov = coverage(pool, fac, service, need.key)
+    placed = cov[cov["status"] != "not placed"]
+    n_gap = int((placed["status"] != "covered").sum())
+    median_km = placed["nearest_high_km"].median()
+    in_state = fac if state == "All India" else fac[fac["state"] == pool["state"].iloc[0]] if len(fac) and len(pool) else fac
+    n_high_state = int((in_state["label"] == "High").sum()) if len(in_state) else 0
+    worst = cov.dropna(subset=["need_value"]).sort_values("need_pct", ascending=False).head(1)
+    worst_txt = (f"{worst['district'].iloc[0]}: {worst['need_value'].iloc[0]:.1f}%" if len(worst) else "n/a")
+    noun = service.label.lower()
+    st.markdown(
+        '<div class="cf-kpis">'
+        f'<div class="cf-kpi"><b class="red">{n_gap} of {len(placed)}</b><span>districts with no well-documented '
+        f'{esc(noun)} within {service.travel_km:.0f} km of their centre</span></div>'
+        f'<div class="cf-kpi"><b>{(f"{median_km:.0f} km" if median_km == median_km else "n/a")}</b><span>median distance from a district centre to the nearest '
+        f'well-documented {esc(noun)}</span></div>'
+        f'<div class="cf-kpi"><b>{n_high_state}</b><span>facilities with a High-confidence {esc(noun)} claim in '
+        f'{esc(state)}</span></div>'
+        f'<div class="cf-kpi"><b class="sm">{esc(worst_txt)}</b><span>highest need: {esc(need.label.lower())}'
+        f'{" (low = more need)" if need.need_when == "low" else ""}</span></div></div>',
+        unsafe_allow_html=True)
+
+    left, right = st.columns([1.1, 1], gap="large")
+    with left:
+        st.markdown('<div class="cf-why-h" style="margin-top:12px">Priority districts: gaps first, highest need first</div>',
+                    unsafe_allow_html=True)
+        top = cov.head(10)
+        vmax = max(float(cov["need_value"].max() or 1), 1.0)
+        rows = []
+        for i, r in enumerate(top.itertuples(), 1):
+            label, fg, bg, border, _ = STATUS[r.status]
+            near = (f"Nearest well-documented: {esc(r.nearest_high)} · {r.nearest_high_km:.0f} km"
+                    if isinstance(r.nearest_high, str) else "No well-documented facility found")
+            near += f" · {r.medium_within} weaker claim{'s' if r.medium_within != 1 else ''} within reach" if r.medium_within else ""
+            need_html = (f'{need.label.split(" (")[0]}: <b>{r.need_value:.1f}%</b><div class="cf-bar">'
+                         f'<i style="width:{100 * r.need_value / vmax:.0f}%;background:{fg}"></i></div>'
+                         if r.need_value == r.need_value else "no NFHS value")
+            rows.append(f'<div class="cf-prow"><span class="n" style="background:{fg}">{i}</span>'
+                        f'<div class="d"><b>{esc(r.district)}</b>{", " + esc(r.state_label) if state == "All India" else ""}'
+                        f' <span class="cf-st" style="color:{fg};background:{bg};border-color:{border}">{label}</span>'
+                        f'<small>{near}</small></div>'
+                        f'<div class="need">{need_html}</div></div>')
+        st.markdown(f'<div class="cf-side" style="margin-top:4px">{"".join(rows)}</div>', unsafe_allow_html=True)
+    with right:
+        if len(placed):
+            st.pydeck_chart(coverage_deck(cov, fac), use_container_width=True)
+        legend = "".join(f'<span><i style="background:rgb{tuple(STATUS[s][4])}"></i>{STATUS[s][0]}</span>'
+                         for s in ("gap", "weak evidence only", "covered"))
+        st.markdown(f'<div class="cf-legend">{legend}<span><i style="background:#0F172A"></i>Well-documented facility</span>'
+                    '<span>Bigger circle = more need</span></div>', unsafe_allow_html=True)
+
+    unplaced = cov[cov["status"] == "not placed"]["district"].tolist()
+    st.markdown(
+        f'<div class="cf-note trade"><span class="i">How to read this</span><span><b>Covered</b> means a facility '
+        f'with a High-confidence {esc(noun)} claim is within {service.travel_km:.0f} km of the district centre (the '
+        f'same distance scale the search uses). <b>Only weak claims</b> means only Medium-confidence ones are. A gap '
+        f'means no well-documented claim in this dataset, which is not proof the service is missing: verify locally. '
+        f'District centres come from India Post post offices.'
+        + (f' {len(unplaced)} district(s) could not be placed: {esc(", ".join(unplaced[:8]))}'
+           + ("…" if len(unplaced) > 8 else "") + '.' if unplaced else '') + '</span></div>',
+        unsafe_allow_html=True)
+    with st.expander(f"All {len(cov)} districts as a table"):
+        table = cov[["district", "state_label", "status", "nearest_high", "nearest_high_km", "high_within",
+                     "medium_within", "need_value", "placed_by"]].rename(columns={
+            "district": "District", "state_label": "State", "status": "Status",
+            "nearest_high": "Nearest well-documented facility", "nearest_high_km": "Distance (km)",
+            "high_within": f"High within {service.travel_km:.0f} km", "medium_within": f"Medium within {service.travel_km:.0f} km",
+            "need_value": f"{need.label} (%)", "placed_by": "District centre from"})
+        st.dataframe(table, use_container_width=True, hide_index=True)
+        st.download_button("Download this table (CSV)", table.to_csv(index=False),
+                           file_name=f"carefinder_coverage_{service.key}_{state.replace(' ', '_').lower()}.csv")
+
+    a = audit()
+    st.markdown(
+        '<div class="cf-label">What we checked in the data</div><div class="cf-audit">'
+        f'<div><b>{a["records"]:,}</b><span>facility records read and checked</span></div>'
+        f'<div><b>{a["location_fixed"]:,}</b><span>coordinates contradicted the address; re-placed by address</span></div>'
+        f'<div><b>{a["location_conflict"] + a["address_inconsistent"]:,}</b><span>locations we could not confirm (shown with a penalty)</span></div>'
+        f'<div><b>{a["merged"]:,}</b><span>records that mix in other hospitals</span></div>'
+        f'<div><b>{a["duplicates"]:,}</b><span>records with a duplicate elsewhere (merged)</span></div>'
+        f'<div><b>{a["corrupted"]:,}</b><span>corrupted rows (shifted columns)</span></div></div>',
+        unsafe_allow_html=True)
 
 
 def pick(service: str, place: str):
@@ -276,75 +475,86 @@ for key, default in (("service", "Dialysis"), ("place", ""), ("other", ""), ("qu
 finder = load_finder()
 hero(finder)
 
-st.markdown('<div class="cf-label">Find care</div>', unsafe_allow_html=True)
-with st.form("search", border=False):
-    c1, c2, c3 = st.columns([1.1, 1.3, 0.45], vertical_alignment="bottom")
-    c1.selectbox("What care does the patient need?", LABELS, key="service")
-    c2.text_input("Where is the patient?", key="place",
-                  placeholder="Town, district, village, 6-digit PIN code, or lat, lon")
-    c3.form_submit_button("Find care", on_click=submit, use_container_width=True)
-    with st.expander("More options"):
-        o1, o2, o3 = st.columns(3)
-        o1.text_input("Or describe another service", key="other", placeholder="e.g. kidney transplant")
-        top_k = o2.slider("How many options to show", 1, 10, 5)
-        max_km = o3.slider("Furthest the patient can travel (km). 0 = let us decide", 0, 1000, 0, step=25)
+tab_find, tab_plan = st.tabs(["Find care for a patient", "Plan coverage across districts"])
+with tab_find:
+    st.markdown('<div class="cf-label">Find care</div>', unsafe_allow_html=True)
+    with st.form("search", border=False):
+        c1, c2, c3 = st.columns([1.1, 1.3, 0.45], vertical_alignment="bottom")
+        c1.selectbox("What care does the patient need?", LABELS, key="service")
+        c2.text_input("Where is the patient?", key="place",
+                      placeholder="Town, district, village, 6-digit PIN code, or lat, lon")
+        c3.form_submit_button("Find care", on_click=submit, use_container_width=True)
+        with st.expander("More options"):
+            o1, o2, o3 = st.columns(3)
+            o1.text_input("Or describe another service", key="other", placeholder="e.g. kidney transplant")
+            top_k = o2.slider("How many options to show", 1, 10, 5)
+            max_km = o3.slider("Furthest the patient can travel (km). 0 = let us decide", 0, 1000, 0, step=25)
 
-ex_cols = st.columns([0.32] + [1] * len(EXAMPLES) + [1.6], vertical_alignment="center")
-ex_cols[0].markdown('<div style="font-size:13px;color:#64748B;font-weight:600">Try</div>', unsafe_allow_html=True)
-for col, (svc, place, label) in zip(ex_cols[1:], EXAMPLES):
-    col.button(label, on_click=pick, args=(svc, place), use_container_width=True)
+    ex_cols = st.columns([0.32] + [1] * len(EXAMPLES) + [1.6], vertical_alignment="center")
+    ex_cols[0].markdown('<div style="font-size:13px;color:#64748B;font-weight:600">Try</div>', unsafe_allow_html=True)
+    for col, (svc, place, label) in zip(ex_cols[1:], EXAMPLES):
+        col.button(label, on_click=pick, args=(svc, place), use_container_width=True)
 
-query = st.session_state.query
-if not query:
-    how_it_works()
-else:
-    service_query, place = query
-    res = finder.search(service_query, place, top_k=top_k, max_km=max_km or None)
-    if res.error:
-        st.error(res.error)
+    query = st.session_state.query
+    if not query:
+        how_it_works()
     else:
-        loc = res.location
-        st.markdown(f'<div class="cf-results-h">{esc(res.service.label)} near {esc(loc.label)}</div>',
-                    unsafe_allow_html=True)
-        approx = f" · ±{loc.uncertainty_km:.0f} km" if loc.uncertainty_km else ""
-        source = {"post office / town": "India Post directory", "PIN code": "India Post PIN directory",
-                  "city": "facility addresses", "district": "India Post directory",
-                  "coordinates": "your coordinates", "state": "state centre"}.get(loc.method, loc.method)
-        st.markdown(
-            '<div class="cf-chips">'
-            f'<span class="cf-chip">📍 Located by <b>{esc(loc.method)}</b> via {esc(source)}{approx}</span>'
-            f'<span class="cf-chip"><b>{res.candidates:,}</b> facilities mention {esc(res.service.label.lower())}</span>'
-            f'<span class="cf-chip">Showing the best <b>{len(res.results)}</b></span></div>',
-            unsafe_allow_html=True)
-        for note in res.notes:
-            kind = "trade" if ("nearest" in note or "closest" in note) else "warn"
-            icon = "Trade-off" if kind == "trade" else "Heads up"
-            st.markdown(f'<div class="cf-note {kind}"><span class="i">{icon}</span><span>{esc(note)}</span></div>',
+        service_query, place = query
+        res = finder.search(service_query, place, top_k=top_k, max_km=max_km or None)
+        if res.error:
+            st.error(res.error)
+        else:
+            loc = res.location
+            st.markdown(f'<div class="cf-results-h">{esc(res.service.label)} near {esc(loc.label)}</div>',
                         unsafe_allow_html=True)
-
-        results = res.results
-        left, right = st.columns([1.65, 1], gap="large")
-        with left:
-            for r in results.itertuples():
-                st.markdown(card(r), unsafe_allow_html=True)
-                with st.expander(f"Full evidence, sources and unknowns for {r.name}"):
-                    st.markdown(r.explanation)
-        with right:
-            st.pydeck_chart(deck(results, loc), use_container_width=True)  # no height kwarg on Streamlit 1.38
+            approx = f" · ±{loc.uncertainty_km:.0f} km" if loc.uncertainty_km else ""
+            source = {"post office / town": "India Post directory", "PIN code": "India Post PIN directory",
+                      "city": "facility addresses", "district": "India Post directory",
+                      "coordinates": "your coordinates", "state": "state centre"}.get(loc.method, loc.method)
             st.markdown(
-                '<div class="cf-legend"><span><i style="background:#2563EB"></i>Patient</span>'
-                '<span><i style="background:#047857"></i>High</span><span><i style="background:#D97706"></i>Medium</span>'
-                '<span><i style="background:#DC2626"></i>Low</span></div>', unsafe_allow_html=True)
-            rows = "".join(
-                f'<div class="cf-row"><span class="n" style="background:{TONE[r.confidence_label][0]}">{r.rank}</span>'
-                f'<span class="nm">{esc(r.name)}</span><span class="km">{r.distance_km:.1f} km</span></div>'
-                for r in results.itertuples())
-            st.markdown(f'<div class="cf-side"><div class="cf-why-h">At a glance</div>{rows}</div>',
-                        unsafe_allow_html=True)
-            st.download_button("Download these results (JSON)", res.to_json(), file_name="carefinder_results.json",
-                               use_container_width=True)
-        how_it_works(res.service)
+                '<div class="cf-chips">'
+                f'<span class="cf-chip">📍 Located by <b>{esc(loc.method)}</b> via {esc(source)}{approx}</span>'
+                f'<span class="cf-chip"><b>{res.candidates:,}</b> facilities mention {esc(res.service.label.lower())}</span>'
+                f'<span class="cf-chip">Showing the best <b>{len(res.results)}</b></span></div>',
+                unsafe_allow_html=True)
+            for note in res.notes:
+                kind = "trade" if ("nearest" in note or "closest" in note) else "warn"
+                icon = "Trade-off" if kind == "trade" else "Heads up"
+                st.markdown(f'<div class="cf-note {kind}"><span class="i">{icon}</span><span>{esc(note)}</span></div>',
+                            unsafe_allow_html=True)
 
-st.markdown('<div class="cf-foot">Data: Virtue Foundation facility dataset (DAIS 2026) and India Post PIN directory, '
+            results = res.results
+            left, right = st.columns([1.65, 1], gap="large")
+            with left:
+                for r in results.itertuples():
+                    st.markdown(card(r), unsafe_allow_html=True)
+                    with st.expander(f"Full evidence, sources and unknowns for {r.name}"):
+                        st.markdown(r.explanation)
+            with right:
+                st.pydeck_chart(deck(results, loc), use_container_width=True)  # no height kwarg on Streamlit 1.38
+                st.markdown(
+                    '<div class="cf-legend"><span><i style="background:#2563EB"></i>Patient</span>'
+                    '<span><i style="background:#047857"></i>High</span><span><i style="background:#D97706"></i>Medium</span>'
+                    '<span><i style="background:#DC2626"></i>Low</span></div>', unsafe_allow_html=True)
+                rows = "".join(
+                    f'<div class="cf-row"><span class="n" style="background:{TONE[r.confidence_label][0]}">{r.rank}</span>'
+                    f'<span class="nm">{esc(r.name)}</span><span class="km">{r.distance_km:.1f} km</span></div>'
+                    for r in results.itertuples())
+                st.markdown(f'<div class="cf-side"><div class="cf-why-h">At a glance</div>{rows}</div>',
+                            unsafe_allow_html=True)
+                st.download_button("Download these results (JSON)", res.to_json(), file_name="carefinder_results.json",
+                                   use_container_width=True)
+            how_it_works(res.service)
+
+with tab_plan:
+    try:
+        district_table = load_districts(finder)
+    except Exception as exc:  # e.g. the app's service principal cannot read the NFHS table yet
+        district_table = None
+        st.error(f"Could not load the NFHS-5 district table: {exc}")
+    planner(district_table)
+
+st.markdown('<div class="cf-foot">Data: Virtue Foundation facility dataset (DAIS 2026), India Post PIN directory and NFHS-5 '
+            'district health indicators, '
             'via the Databricks Marketplace. Facility details come from public web pages and may be wrong: always '
             'call ahead.</div>', unsafe_allow_html=True)
