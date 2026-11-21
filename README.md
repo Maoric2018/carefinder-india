@@ -78,6 +78,14 @@ CAREFINDER_LOCAL_CSV=tests/sample_facilities.csv CAREFINDER_LOCAL_PINS=tests/sam
 - Git folder: `/Workspace/Users/<you>/carefinder-india` (synced from this repo)
 - Tables: `workspace.carefinder.facilities_scored`, `facility_service_evidence` (42,515 rows), `services`
 - App: `carefinder-india` (Compute → Apps), reading the Marketplace tables through the Serverless Starter Warehouse
+- Genie space: **CareFinder India: find the right care** (Genie Agents). Tables `facility_service_evidence`,
+  `facilities_scored`, `services`, `places`, plus the SQL function `workspace.carefinder.find_care(service, place)`,
+  which ranks exactly like the app. Instructions: [genie/instructions.md](genie/instructions.md); sample questions:
+  [genie/sample_questions.md](genie/sample_questions.md).
+  - "Where can a patient get dialysis near Bakhtiyarpur, Bihar?" returns the same top 6 as the app, with quotes,
+    phone numbers, caveats and a call-ahead warning.
+  - "Which districts in Bihar have no High-confidence NICU?" returns 34 of 38 (only Darbhanga, Nawada, Patna and
+    Saharsa have one), with the caveat that a missing claim is not proof of a missing NICU.
 
 ## Still to do
 
