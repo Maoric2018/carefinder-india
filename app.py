@@ -152,6 +152,11 @@ LOGO = ('<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#ff
         '<path d="M12 6.5v6M9 9.5h6"/></svg>')
 
 
+def pfmt(p: float) -> str:
+    """Probabilities: never print a falsely precise 1.00 or 0.00."""
+    return "≥0.99" if p >= 0.995 else "≤0.01" if p <= 0.005 else f"{p:.2f}"
+
+
 def esc(x) -> str:
     return html.escape(str(x)) if x is not None else ""
 
@@ -414,12 +419,12 @@ def card(r) -> str:
         f'<div class="cf-card"><div class="cf-top"><div class="cf-rank">{r.rank}</div>'
         f'<div class="cf-title"><div class="cf-name">{esc(r.name)}</div><div class="cf-sub">{esc(place)}</div></div>'
         f'<div class="cf-pill" style="color:{fg};background:{bg};border-color:{border}"><i style="background:{fg}"></i>'
-        f'{r.confidence_label} confidence · {r.confidence:.2f}</div></div>'
+        f'{r.confidence_label} confidence · {pfmt(r.confidence)}</div></div>'
         f'<div class="cf-metrics">'
         f'<div class="cf-m"><span class="k">Distance</span><span class="v">{r.distance_km:.1f} km</span>'
         f'<span class="u">≈ {r.travel_h * 60:.0f} min by road</span></div>'
-        f'<div class="cf-m"><span class="k">Offers it</span><span class="v">{r.confidence:.2f}</span>'
-        f'<span class="u">90%: {r.conf_lo:.2f}-{r.conf_hi:.2f}</span>'
+        f'<div class="cf-m"><span class="k">Offers it</span><span class="v">{pfmt(r.confidence)}</span>'
+        f'<span class="u">90%: {pfmt(r.conf_lo)}-{pfmt(r.conf_hi)}</span>'
         f'<div class="cf-bar"><i style="width:{r.confidence*100:.0f}%;background:{fg}"></i></div></div>'
         f'<div class="cf-m"><span class="k">Gets there in {r.window_h:.0f} h</span><span class="v">{r.access:.0%}</span>'
         f'<div class="cf-bar"><i style="width:{r.access*100:.0f}%;background:#2563EB"></i></div></div>'

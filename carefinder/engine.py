@@ -348,7 +348,11 @@ def method_markdown(service: Service | None = None, model: LatentClassModel | No
    whether a facility offers the service is a hidden yes/no, and each field is a noisy witness with its own
    true-positive and false-positive rate. Those rates are estimated from how often the fields *agree with each
    other* across all 10,088 records. A field whose mentions are usually corroborated earns a large likelihood
-   ratio; one whose mentions usually stand alone earns a small one.
+   ratio; one whose mentions usually stand alone earns a small one. Fields scraped from one page are not truly
+   independent, so repeated mentions are discounted by the Kish design effect 1 + (k-1)·ρ, where ρ is the
+   correlation between fields within the "offers it" class, estimated from the fitted model. Signals whose
+   direction we know are constrained: "not available" can never raise the odds, concrete detail can never lower
+   them.
 3. **Record checks are learned too.** Flags such as "looks like a clinic", "may merge several hospitals" or
    "no source URL" enter as covariates on the prior (latent class regression); EM estimates how much each one
    changes the odds. Location problems are *not* treated as evidence against the claim: they widen the
@@ -374,7 +378,8 @@ never filled in."""
         hours, basis = access.window(service.key)
         out += f"""
 
-**Learned for {service.label}** (EM on {model.n:,} records, base rate {model.prior():.1%}):
+**Learned for {service.label}** (EM on {model.n:,} records, base rate {model.prior():.1%}, within-class field
+correlation ρ = {model.rho:.2f}, so 3 agreeing fields count as {3 / (1 + 2 * model.rho):.1f} independent ones):
 
 | Field | Dedicated mention | Only inside a long list |
 |---|---|---|

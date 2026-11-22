@@ -18,7 +18,11 @@ EM alternates between the posterior P(Y | x, z) for every record (E-step) and re
 soft labels (M-step). Field reliabilities are therefore learned from how often fields *agree with each other*:
 a field whose mentions are usually corroborated by other fields gets a large likelihood ratio, a field whose
 mentions usually stand alone gets a small one. Dirichlet(1) priors on θ and a ridge prior on γ keep rare
-patterns stable, and flag effects are constrained to be ≤ 0 (a red flag can only lower the odds; projected Newton). Uncertainty comes from a non-parametric bootstrap over facilities (refit, recompute posteriors).
+patterns stable, and flag effects are constrained to be ≤ 0 (a red flag can only lower the odds; projected Newton).
+Signals whose direction we know are constrained too: "not available" may not raise the odds, concrete detail and
+related words may not lower them (when a constraint binds, the two classes share that rate: the constrained MLE).
+Because fields scraped from one page are correlated, repeated mentions are discounted by the Kish design effect
+1 + (k-1)·rho, with rho the within-class correlation of field mentions estimated from the fitted model. Uncertainty comes from a non-parametric bootstrap over facilities (refit, recompute posteriors).
 
 Limitations we report: conditional independence is an assumption (fields scraped from the same page can share
 errors), and "offers the service" means "the record consistently says so", not an on-site verification.
@@ -35,6 +39,9 @@ FIELDS = ("procedure", "equipment", "capability", "description", "name", "specia
 SIGNALS = ("support_only", "negated", "specific")
 INDICATORS = FIELDS + SIGNALS
 CATS = (3,) * len(FIELDS) + (2,) * len(SIGNALS)  # field: none / listed / dedicated; signals: no / yes
+# Direction constraints on the binary signals: "le" = may not raise the odds, "ge" = may not lower them.
+# Unsupervised EM only sees co-occurrence; it cannot know that "not available" argues *against* a claim.
+SIGNAL_CONSTRAINTS = {"support_only": "ge", "negated": "le", "specific": "ge"}
 COVARIATES = ("clinic_for_hospital_service", "pharmacy_or_dental", "merged_record", "corrupted_row",
               "mentions_other_facilities", "no_source_urls", "no_own_website", "too_few_beds")
 COVARIATE_TEXT = {
@@ -61,6 +68,7 @@ class LatentClassModel:
     loglik: float = float("nan")
     iterations: int = 0
     n: int = 0
+    rho: float = 0.0               # within-class correlation of field mentions (for the design-effect discount)
     lo: np.ndarray | None = None   # bootstrap 5th percentile of the posterior, per unique pattern
     hi: np.ndarray | None = None   # bootstrap 95th percentile
     patterns: np.ndarray | None = None
@@ -68,10 +76,21 @@ class LatentClassModel:
 
     # ---- inference -------------------------------------------------------------------------------
     def log_lr(self, X: np.ndarray) -> np.ndarray:
-        """log P(x | Y=1) - log P(x | Y=0) for each row of X."""
-        out = np.zeros(len(X))
-        for j, (t1, t0) in enumerate(zip(self.theta1, self.theta0)):
-            out += np.log(t1[X[:, j]]) - np.log(t0[X[:, j]])
+        """Evidence log-likelihood ratio, with repeated field mentions discounted by the Kish design effect.
+
+        Fields scraped from one web page are not independent witnesses. With k fields mentioning the service and
+        within-class correlation rho, k correlated witnesses are worth k / (1 + (k-1) rho) independent ones, so the
+        fields' summed log-LR is multiplied by 1 / (1 + (k-1) rho).
+        """
+        nf = min(len(FIELDS), len(self.theta1))
+        fields = np.zeros(len(X))
+        for j in range(nf):
+            fields += np.log(self.theta1[j][X[:, j]]) - np.log(self.theta0[j][X[:, j]])
+        k = (X[:, :nf] > 0).sum(1)
+        fields /= 1 + np.maximum(k - 1, 0) * self.rho
+        out = fields
+        for j in range(nf, len(self.theta1)):
+            out = out + np.log(self.theta1[j][X[:, j]]) - np.log(self.theta0[j][X[:, j]])
         return out
 
     def posterior(self, X: np.ndarray, Z: np.ndarray) -> np.ndarray:
@@ -114,7 +133,7 @@ def _unique(X: np.ndarray, Z: np.ndarray):
 
 
 def _em(Xu, Zu, w, cats, r, theta1=None, theta0=None, gamma=None, alpha=1.0, ridge=1.0, max_iter=500, tol=1e-9,
-        nonpositive=True):
+        nonpositive=True, constraints=None):
     n_cov = Zu.shape[1]
     D = np.hstack([np.ones((len(Zu), 1)), Zu])
     gamma = np.zeros(n_cov + 1) if gamma is None else gamma.copy()
@@ -128,8 +147,12 @@ def _em(Xu, Zu, w, cats, r, theta1=None, theta0=None, gamma=None, alpha=1.0, rid
                 onehot = np.eye(c)[Xu[:, j]]
                 n1 = (w * r) @ onehot + alpha
                 n0 = (w * (1 - r)) @ onehot + alpha
-                theta1.append(n1 / n1.sum())
-                theta0.append(n0 / n0.sum())
+                t1, t0 = n1 / n1.sum(), n0 / n0.sum()
+                rule = constraints.get(j) if constraints else None
+                if (rule == "le" and t1[1] > t0[1]) or (rule == "ge" and t1[1] < t0[1]):
+                    t1 = t0 = (n1 + n0) / (n1 + n0).sum()  # constrained MLE: the classes share this rate
+                theta1.append(t1)
+                theta0.append(t0)
             for _ in range(2):  # Newton steps for the weighted logistic regression of r on z (ridge on effects)
                 p = _sigmoid(D @ gamma)
                 pen = np.r_[0.0, np.full(n_cov, ridge)]
@@ -163,13 +186,15 @@ def fit(X: np.ndarray, Z: np.ndarray, cats=CATS, n_boot: int = 100, seed: int = 
     dedicated = (Xu[:, :len(FIELDS)] == 2).sum(1)
     listed = (Xu[:, :len(FIELDS)] == 1).sum(1)
     r0 = np.clip(0.02 + 0.55 * (dedicated >= 1) + 0.38 * (dedicated >= 2) + 0.3 * ((dedicated == 0) & (listed >= 1)), 0, 0.98)
-    theta1, theta0, gamma, r, ll, it = _em(Xu, Zu, w, cats, r0, ridge=ridge, nonpositive=nonpositive)
+    cons = {INDICATORS.index(k): v for k, v in SIGNAL_CONSTRAINTS.items()} if len(cats) == len(INDICATORS) else None
+    theta1, theta0, gamma, r, ll, it = _em(Xu, Zu, w, cats, r0, ridge=ridge, nonpositive=nonpositive, constraints=cons)
     # Keep class 1 = "offers the service": it must mention the service more often than class 0.
     mention1 = np.mean([1 - t[0] for t in theta1[:len(FIELDS)]])
     mention0 = np.mean([1 - t[0] for t in theta0[:len(FIELDS)]])
     if mention1 < mention0:
         theta1, theta0, gamma = theta0, theta1, -gamma
     model = LatentClassModel(theta1, theta0, gamma, ll, it, int(w.sum()))
+    model.rho = _within_class_rho(Xu, w * r)
     model.patterns = rows
     model.index = {tuple(r): i for i, r in enumerate(rows.tolist())}
     if n_boot:
@@ -180,12 +205,27 @@ def fit(X: np.ndarray, Z: np.ndarray, cats=CATS, n_boot: int = 100, seed: int = 
             wb = rng.multinomial(N, w / N).astype(float)
             t1, t0, gb, _, _, _ = _em(Xu, Zu, wb, cats, r, theta1=[t.copy() for t in theta1],
                                       theta0=[t.copy() for t in theta0], gamma=gamma, ridge=ridge, max_iter=60, tol=1e-7,
-                                      nonpositive=nonpositive)
-            m = LatentClassModel(t1, t0, gb)
+                                      nonpositive=nonpositive, constraints=cons)
+            m = LatentClassModel(t1, t0, gb, rho=model.rho)
             draws[b] = m.posterior(Xu, Zu)
         model.lo = np.percentile(draws, 5, axis=0)
         model.hi = np.percentile(draws, 95, axis=0)
     return model
+
+
+def _within_class_rho(Xu: np.ndarray, weights: np.ndarray) -> float:
+    """Mean pairwise correlation of 'field mentions the service' indicators among records in the offers class."""
+    nf = min(len(FIELDS), Xu.shape[1])
+    M = (Xu[:, :nf] > 0).astype(float)
+    wsum = weights.sum()
+    if wsum <= 0 or nf < 2:
+        return 0.0
+    mu = (weights @ M) / wsum
+    C = ((M - mu) * weights[:, None]).T @ (M - mu) / wsum
+    sd = np.sqrt(np.clip(np.diag(C), 1e-12, None))
+    R = C / np.outer(sd, sd)
+    off = R[~np.eye(nf, dtype=bool)]
+    return float(np.clip(np.nanmean(off), 0.0, 1.0))
 
 
 def simulate(n: int, theta1, theta0, gamma, Z: np.ndarray | None = None, seed: int = 0):
