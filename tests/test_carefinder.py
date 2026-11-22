@@ -247,3 +247,22 @@ def test_learned_model_orders_evidence(finder):
     m = finder.model_for(svc)
     lr = m.likelihood_ratios()
     assert all(lr[f]["dedicated"] > 1 for f in ("procedure", "capability"))
+
+
+def test_breakdown_reproduces_posterior():
+    """The arithmetic shown in the app (base odds × field factors^(1/deff) × signals × flags) is the model's posterior."""
+    import numpy as np
+    from carefinder.model import CATS, fit, simulate
+    t1 = [np.array([.2, .3, .5])] * 6 + [np.array([.8, .2])] * 3
+    t0 = [np.array([.9, .07, .03])] * 6 + [np.array([.9, .1])] * 3
+    Z = (np.random.default_rng(1).random((3000, 2)) < 0.2).astype(float)
+    X, Z, _ = simulate(3000, t1, t0, np.array([-2.0, -1.0, 0.0]), Z=Z, seed=3)
+    m = fit(X, Z, cats=CATS, n_boot=0)
+    m.rho = 0.1
+    post = m.posterior(X[:50], Z[:50])
+    for i in range(50):
+        b = m.breakdown(X[i], Z[i])
+        assert abs(b["p"] - post[i]) < 1e-9
+        flags = np.prod([o for _, o in b["flags"]]) if b["flags"] else 1.0
+        sig = np.prod([v for _, _, v in b["signals"]])
+        assert abs(b["base_odds"] * b["field_factor"] * sig * flags - b["odds"]) < 1e-6 * max(1, b["odds"])

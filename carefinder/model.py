@@ -125,6 +125,30 @@ class LatentClassModel:
     def prior(self) -> float:
         return float(_sigmoid(self.gamma[0]))
 
+    def breakdown(self, x: np.ndarray, z: np.ndarray) -> dict:
+        """The posterior for one record as a product of learned factors, exactly as posterior() computes it:
+
+        odds = base odds × (Π field factors)^(1/deff) × Π signal factors × Π flag odds ratios.
+        Silent fields have factors too (usually < 1): a hospital that really offers the service tends to say so.
+        """
+        x = np.asarray(x, dtype=int)
+        z = np.asarray(z, dtype=float)
+        nf = min(len(FIELDS), len(self.theta1))
+        state = ("silent", "in a list", "dedicated")
+        fields = [(FIELDS[j], state[x[j]], float(self.theta1[j][x[j]] / self.theta0[j][x[j]])) for j in range(nf)]
+        k = int((x[:nf] > 0).sum())
+        deff = 1 + max(k - 1, 0) * self.rho
+        signals = [(INDICATORS[j], bool(x[j]), float(self.theta1[j][x[j]] / self.theta0[j][x[j]]))
+                   for j in range(nf, len(self.theta1))]
+        flags = [(COVARIATES[i], float(math.exp(self.gamma[i + 1]))) for i in range(len(z)) if z[i] > 0]
+        field_product = math.prod(f for _, _, f in fields)
+        log_odds = (self.gamma[0] + math.log(field_product) / deff + sum(math.log(s) for _, _, s in signals)
+                    + sum(math.log(o) for _, o in flags))
+        return {"base_odds": float(math.exp(self.gamma[0])), "base_p": self.prior(), "fields": fields, "k": k,
+                "deff": deff, "field_product": field_product, "field_factor": field_product ** (1 / deff),
+                "signals": signals, "flags": flags, "odds": float(math.exp(log_odds)),
+                "p": float(_sigmoid(log_odds))}
+
 
 def _unique(X: np.ndarray, Z: np.ndarray):
     rows = np.hstack([X, Z]).astype(np.int16)

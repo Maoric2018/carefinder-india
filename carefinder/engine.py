@@ -266,6 +266,8 @@ class CareFinder:
             "capacity": r["capacity"], "num_doctors": r["num_doctors"], "year_established": r["year_established"],
             "phone": (r["phone"] or [None])[0], "website": (r["website"] or [None])[0],
         }
+        X, Z = self._xz[service.key]
+        row["breakdown"] = model.breakdown(X[i], Z[i])
         row["explanation"] = explain(row, ev, model, service, loc)
         return row
 
@@ -287,7 +289,19 @@ def _p(v: float) -> str:
 
 
 def _x(v: float) -> str:
-    return f"×{v:.0f}" if v >= 10 else f"×{v:.1f}" if v >= 1 else f"×{v:.2f}"
+    return f"×{v:,.0f}" if v >= 10 else f"×{v:.1f}" if v >= 1 else f"×{v:.2f}"
+
+
+def _odds(o: float) -> str:
+    """Odds as 'a : b', e.g. 1 : 11 or 2,400 : 1."""
+    if o >= 1:
+        return f"{o:,.0f} : 1" if o >= 10 else f"{o:.1f} : 1"
+    inv = 1 / max(o, 1e-12)
+    return f"1 : {inv:,.0f}" if inv >= 10 else f"1 : {inv:.1f}"
+
+
+SIGNAL_TEXT = {"support_only": "only related words", "negated": "text says unavailable or referred",
+               "specific": "concrete detail (counts, brands)"}
 
 
 def explain(row: dict, ev: Evidence, model: LatentClassModel, service: Service, loc: ResolvedLocation) -> str:
@@ -305,24 +319,37 @@ def explain(row: dict, ev: Evidence, model: LatentClassModel, service: Service, 
     if row.get("own_site"):
         lines.append(f"- Its sources include the facility's own website ({row['own_site']}).")
 
-    lr = model.likelihood_ratios()
-    learned = []
-    for f in ev.core_fields:
-        kind = "dedicated" if ev.field_strength.get(f, 0) >= 1.0 else "listed"
-        learned.append(f"{FIELD_LABELS[f].lower()} ({'a dedicated mention' if kind == 'dedicated' else 'inside a list'}) "
-                       f"{_x(lr[f][kind])}")
-    if ev.specific:
-        learned.append(f"concrete detail {_x(lr['specific']['present'])}")
+    b = row["breakdown"]
     lines.append(f"\n**How likely is it that it offers {noun}? {row['confidence_label']}: {_p(row['confidence'])}** "
-                 f"(90% interval {min(row['conf_lo'], 0.99):.2f}–{row['conf_hi']:.2f})")
-    lines.append(f"- Base rate: {model.prior():.0%} of records in this dataset are estimated to offer {noun}. "
-                 + ("Learned from the data, each piece of evidence multiplies the odds: " + ", ".join(learned) + "."
-                    if learned else ""))
-    lines.append(f"- From its text alone: {_p(row['evidence_score'])}.")
-    for p_ in row["penalties"]:
-        lines.append(f"- Record check: {p_['reason']}: odds {_x(p_['odds'])} (learned).")
-    if not row["penalties"]:
-        lines.append("- No record-quality flags.")
+                 f"(90% interval {min(row['conf_lo'], 0.99):.2f}–{row['conf_hi']:.2f}, from refitting the model on "
+                 f"100 resampled datasets)")
+    lines.append(f"- **Start** from the base rate: {b['base_p']:.0%} of records in this dataset are estimated to offer "
+                 f"{noun}, odds {_odds(b['base_odds'])}.")
+    lines.append("- **Each field multiplies the odds** by a factor learned from the data. Silence counts too, because "
+                 f"facilities that really offer {noun} usually say so: "
+                 + " · ".join(f"{FIELD_LABELS[f].lower()} {st} {_x(v)}" for f, st, v in b["fields"]) + ".")
+    if b["k"] > 1:
+        lines.append(f"- {b['k']} fields agree, but fields copied from one web page overlap (ρ = {model.rho:.2f}), so "
+                     f"together they count as {_x(b['field_product'])} to the power 1/{b['deff']:.2f} = "
+                     f"**{_x(b['field_factor'])}**.")
+    else:
+        lines.append(f"- Fields together: **{_x(b['field_factor'])}**.")
+    sig_product = math.prod(v for _, _, v in b["signals"])
+    shown = [(name, present, v) for name, present, v in b["signals"] if abs(math.log(v)) > 0.01]
+    if shown:
+        lines.append("- Other signals: " + " · ".join(
+            f"{SIGNAL_TEXT[name]}: {'yes' if present else 'no'} {_x(v)}" for name, present, v in shown) + ".")
+    flags = [(c, o) for c, o in b["flags"] if o < 0.995]
+    if flags:
+        lines.append("- **Red flags**, also learned: " + " · ".join(f"{COVARIATE_TEXT[c]} {_x(o)}" for c, o in flags) + ".")
+    else:
+        lines.append("- No red flags.")
+    chain = [f"odds {_odds(b['base_odds'])}", _x(b["field_factor"])[1:]]
+    if shown:
+        chain.append(_x(sig_product)[1:])
+    chain += [_x(o)[1:] for _, o in flags]
+    lines.append(f"- **Result:** {' × '.join(chain)} = odds {_odds(b['odds'])}, so P = **{_p(row['confidence'])}**. "
+                 f"From its text alone, ignoring red flags: {_p(row['evidence_score'])}.")
 
     lines.append(f"\n**Can the patient get there in time?** {_km(row['distance_km'])} straight-line ≈ "
                  f"{row['travel_h'] * 60:.0f} min by road ({access.DETOUR}× detour at {access.SPEED_KMH:.0f} km/h). "
@@ -378,20 +405,24 @@ check; the detour factor and speed are national averages. Duplicate records are 
 never filled in."""
     if service is not None and model is not None and not service.key.startswith("custom:"):
         lr = model.likelihood_ratios()
-        rows = "\n".join(f"| {FIELD_LABELS[f]} | {_x(lr[f]['dedicated'])} | {_x(lr[f]['listed'])} |" for f in FIELDS)
+        rows = "\n".join(f"| {FIELD_LABELS[f]} | {_x(lr[f]['dedicated'])} | {_x(lr[f]['listed'])} | {_x(lr[f]['absent'])} |"
+                         for f in FIELDS)
         ors = "\n".join(f"| {COVARIATE_TEXT[c]} | {_x(v)} |" for c, v in model.odds_ratios().items())
         hours, basis = access.window(service.key)
         out += f"""
 
-**Learned for {service.label}** (EM on {model.n:,} records, base rate {model.prior():.1%}, within-class field
+**Learned for {service.label}** (EM on {model.n:,} records, {model.iterations} iterations, base rate {model.prior():.1%}, within-class field
 correlation ρ = {model.rho:.2f}, so 3 agreeing fields count as {3 / (1 + 2 * model.rho):.1f} independent ones):
 
-| Field | Dedicated mention | Only inside a long list |
-|---|---|---|
+| Field | Dedicated mention | Only inside a long list | Silent |
+|---|---|---|---|
 {rows}
-| Related words only | {_x(lr['support_only']['present'])} | |
-| Text says unavailable / referred | {_x(lr['negated']['present'])} | |
-| Concrete detail (counts, brands) | {_x(lr['specific']['present'])} | |
+
+| Signal | Present | Absent |
+|---|---|---|
+| Related words only | {_x(lr['support_only']['present'])} | {_x(lr['support_only']['absent'])} |
+| Text says unavailable / referred | {_x(lr['negated']['present'])} | {_x(lr['negated']['absent'])} |
+| Concrete detail (counts, brands) | {_x(lr['specific']['present'])} | {_x(lr['specific']['absent'])} |
 
 | Record check | Odds multiplier |
 |---|---|
