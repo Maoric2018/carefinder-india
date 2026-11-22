@@ -10,8 +10,10 @@ a **confidence label**, the **caveats** that lowered it, and a plain-language **
 |---|---|
 | `carefinder/` | Core engine (pure pandas; same code runs in notebooks, the app and tests) |
 | `carefinder/taxonomy.py` | 22 services and the words that count as evidence (incl. LSCS, SNCU, CTVS, PMNDP, DOTS) |
-| `carefinder/evidence.py` | Finds mentions, skips negated or "coming soon" ones, scores corroboration across fields |
-| `carefinder/quality.py` | Record trust: coordinates vs city/PIN, merged records, facility type, claim lists too long for the facility's size, duplicates |
+| `carefinder/evidence.py` | Finds mentions per field (dedicated or inside a long list), skips negated or "coming soon" ones |
+| `carefinder/model.py` | Latent class model fitted by EM: learns how much each field's mention and each red flag is worth, with bootstrap intervals |
+| `carefinder/access.py` | Travel-time model: P(arriving within the service's clinical time window) |
+| `carefinder/quality.py` | Record checks: coordinates vs city/PIN, merged records, facility type, claim lists too long for the facility's size, duplicates |
 | `carefinder/geo.py` | Location lookup from the India Post PIN directory + facility data (no external geocoder) |
 | `carefinder/engine.py` | Ranking, explanations, method text, facility × service evidence table |
 | `carefinder/coverage.py` | Planner view: NFHS-5 district need × where well-documented care is (district centres from India Post) |
@@ -23,16 +25,40 @@ a **confidence label**, the **caveats** that lowered it, and a plain-language **
 
 ## How a recommendation is scored
 
-1. **Evidence (0–1):** each field that names the service (procedures 0.60, equipment 0.60, capabilities 0.55,
-   name 0.50, description 0.45, specialties 0.40) is an independent "witness": `1 − ∏(1 − w)`. Related-only
-   words count at 35%. Concrete detail (counts, bed numbers, brands) adds 0.25.
-2. **Trust (multiplier):** ×0.60 coordinates contradict city/PIN · ×0.80 possible merged record · ×0.40
-   pharmacy/dental listing · ×0.80 clinic for a hospital-level service · ×0.70 too few beds · ×0.70 own text
-   says unavailable/planned/referred · ×0.85 PIN in wrong state · ×0.85 claim list too long for its size ·
-   ×0.90 no source URL · ×0.88–0.90 position approximated.
-3. **Confidence** = evidence × trust → High ≥ 0.70, Medium ≥ 0.45, else Low.
-4. **Rank** = confidence × e^(−km / distance scale), scale per service (25 km ER … 150 km cardiac surgery).
-   We always also report the *nearest* facility that mentions the service, if it was ranked lower, and why.
+No hand-set weights: the numbers are learned from the 10,088 records, and each one comes with its uncertainty.
+
+1. **Does it offer the service? A latent class model.** There is no ground truth saying which facilities really
+   offer dialysis, so a supervised classifier is not possible. Instead, each part of a record is a noisy witness:
+   six fields (procedures, equipment, capabilities, description, name, specialties), each with no mention, a
+   mention inside a long list, or a dedicated mention, plus three signals (only related words, the text says
+   unavailable or planned, concrete detail such as machine counts). Following Dawid & Skene (1979), the label model
+   behind Snorkel, the true answer Y is a hidden class and expectation-maximization learns, per service, how often
+   each witness speaks up when Y = 1 and when Y = 0, from how the witnesses agree. The result is a likelihood ratio
+   per witness (dialysis: a dedicated capabilities entry ×120, a mention inside a list ×15) and a base rate
+   (dialysis: 8.1% of records), combined by Bayes' rule into P(offers it | its record).
+2. **Red flags are learned too.** Record problems (a clinic claiming a hospital-level service, a pharmacy or
+   dental listing, a possible merged record, a corrupted row, no source URL, no own website, too few beds) enter as
+   covariates on the prior (latent class regression, Bandeen-Roche et al. 1997). Their odds ratios are learned
+   (burn care: a clinic ×0.06; dialysis: no source URL ×0.19) and constrained to ≤ 1, so a flag can only lower
+   confidence. Signal directions are constrained the same way, and a Dirichlet(1) prior keeps rare patterns finite.
+3. **Correlated fields are not double counted.** Scraped fields can copy each other. We estimate the
+   within-class correlation ρ between field mentions and divide the fields' combined log-likelihood ratio by the
+   Kish design effect 1 + (k − 1)ρ (dialysis: ρ = 0.03, so the conditional-independence assumption roughly holds).
+4. **Uncertainty.** The whole model is refitted on 100 bootstrap resamples of the facilities, giving a 90% interval
+   for every probability (one Pune hospital that lists burns once: 0.49, interval 0.06–0.73). The app never prints
+   1.00: it shows ≥0.99. Labels: High ≥ 0.80, Medium ≥ 0.50, else Low.
+5. **Can the patient get there in time?** Travel time = 1.4 × straight-line km ÷ 35 km/h, log-normal with
+   log-sd 0.35 plus location uncertainty (a facility placed at its city centre is ±8 km), and
+   P(arrives in time) = P(travel time ≤ the service's clinical window): 2 h for C-sections and emergency obstetrics
+   (Lancet Commission on Global Surgery), 1 h for trauma and emergencies (golden hour), 1 h one way for dialysis
+   (DOPPS), 2 h for a cath lab (STEMI guidelines), 4–6 h for planned care (our assumption). The detour factor and
+   speed are assumptions, shown in the app.
+6. **Rank** = P(offers it | its record) × P(arrives in time). We always also report the *nearest* facility that
+   mentions the service, if it ranked lower, and why.
+
+Limitations: the model learns from agreement, so if every field of a record copies the same false claim it will
+still look strong (that is what the record checks and the interval are for); conditional independence is only
+approximately true; and the travel model has no road network.
 
 ## Run locally (synthetic data)
 
@@ -80,8 +106,9 @@ The app's second tab joins all three Marketplace tables. For a service and a sta
 at the centre of its India Post post offices (Census-2011 names such as "Pashchim Champaran" are matched to India
 Post names through direction words, known renames and fuzzy matching), then marks it:
 
-- **Covered**: a High-confidence facility for the service within the service's travel scale (the ranking's scale),
-- **Only weak claims**: only Medium-confidence ones within that distance,
+- **Covered**: a High-confidence facility for the service the district centre can probably reach within the
+  service's time window (P(arrives in time) ≥ 0.5),
+- **Only weak claims**: only Medium-confidence ones within reach,
 - **Gap**: neither. A gap means no well-documented claim in this dataset, not proof the service is missing.
 
 Districts are listed gaps first, then by need, using the NFHS-5 indicator that fits the service (C-section rate for
@@ -106,5 +133,6 @@ checks found across all 10,088 records.
 ## Still to do
 
 - Check the column mapping and the quality-check thresholds against the real data.
-- Spot-check 20 recommendations by hand (open their source URLs) and tune the weights.
+- Re-run `notebooks/02_build_tables.py` so the Genie tables use the learned model (they still hold the older scores).
+- Spot-check 20 recommendations by hand (open their source URLs) to estimate the model's precision.
 - Demo script: rural Bihar dialysis, Maharashtra high-risk delivery, highway trauma.
