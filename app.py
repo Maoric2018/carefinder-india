@@ -424,7 +424,7 @@ def card(r) -> str:
         f'<div class="cf-m"><span class="k">Distance</span><span class="v">{r.distance_km:.1f} km</span>'
         f'<span class="u">≈ {r.travel_h * 60:.0f} min by road</span></div>'
         f'<div class="cf-m"><span class="k">Offers it</span><span class="v">{pfmt(r.confidence)}</span>'
-        f'<span class="u">90%: {pfmt(r.conf_lo)}-{pfmt(r.conf_hi)}</span>'
+        f'<span class="u">90% interval {min(r.conf_lo, 0.99):.2f}–{r.conf_hi:.2f}</span>'
         f'<div class="cf-bar"><i style="width:{r.confidence*100:.0f}%;background:{fg}"></i></div></div>'
         f'<div class="cf-m"><span class="k">Gets there in {r.window_h:.0f} h</span><span class="v">{r.access:.0%}</span>'
         f'<div class="cf-bar"><i style="width:{r.access*100:.0f}%;background:#2563EB"></i></div></div>'
