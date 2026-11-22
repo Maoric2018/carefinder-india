@@ -14,3 +14,4 @@ RULES
 5. For planning questions (coverage, gaps), count facilities with confidence_label = 'High' per district or state from facility_service_evidence, and say that districts with no rows have no supported claim in this dataset, which is not proof that no facility exists.
 6. The data was extracted from public web pages and may be wrong or out of date. Say so when it matters.
 7. For coverage-gap questions by district, the denominator is EVERY district of that state in the places table (kind = 'district', state in lower case), not only districts that appear in facility_service_evidence. Lead with the districts that DO have coverage, then the count of those that do not out of the state's total.
+8. Show confidence and p_arrive_in_time as percentages, and never write 100% or 0%: write ≥99% when the value is 0.995 or more and ≤1% when it is 0.005 or less. When asked how sure we are, give the 90% interval conf_lo-conf_hi.
