@@ -218,7 +218,7 @@ class CareFinder:
             notes.append(
                 f"The nearest facility that mentions {service.label.lower()} is {r['name']} "
                 f"({_km(nearest['distance_km'])}), but it ranks lower: {confidence_label(nearest['confidence'])} "
-                f"confidence, {nearest['confidence']:.2f} ({_evidence_summary(ev)}"
+                f"confidence, {_p(nearest['confidence'])} ({_evidence_summary(ev)}"
                 + (f"; {COVARIATE_TEXT[flags[0]]}" if flags else "") + ").")
         if (top["confidence"].map(confidence_label) == "Low").any():
             notes.append("Results marked Low are weakly supported claims. Call ahead to confirm before travelling.")
@@ -281,6 +281,11 @@ def _evidence_summary(ev: Evidence) -> str:
     return f"mentioned only in {fields}" if len(ev.core_fields) == 1 else f"mentioned in {fields}"
 
 
+def _p(v: float) -> str:
+    """A probability for display: never claim certainty the data can't give."""
+    return "≥0.99" if v >= 0.995 else "≤0.01" if v <= 0.005 else f"{v:.2f}"
+
+
 def _x(v: float) -> str:
     return f"×{v:.0f}" if v >= 10 else f"×{v:.1f}" if v >= 1 else f"×{v:.2f}"
 
@@ -308,12 +313,12 @@ def explain(row: dict, ev: Evidence, model: LatentClassModel, service: Service, 
                        f"{_x(lr[f][kind])}")
     if ev.specific:
         learned.append(f"concrete detail {_x(lr['specific']['present'])}")
-    lines.append(f"\n**How likely is it that it offers {noun}? {row['confidence_label']}: {row['confidence']:.2f}** "
-                 f"(90% interval {row['conf_lo']:.2f}-{row['conf_hi']:.2f})")
+    lines.append(f"\n**How likely is it that it offers {noun}? {row['confidence_label']}: {_p(row['confidence'])}** "
+                 f"(90% interval {min(row['conf_lo'], 0.99):.2f}–{row['conf_hi']:.2f})")
     lines.append(f"- Base rate: {model.prior():.0%} of records in this dataset are estimated to offer {noun}. "
                  + ("Learned from the data, each piece of evidence multiplies the odds: " + ", ".join(learned) + "."
                     if learned else ""))
-    lines.append(f"- From its text alone: {row['evidence_score']:.2f}.")
+    lines.append(f"- From its text alone: {_p(row['evidence_score'])}.")
     for p_ in row["penalties"]:
         lines.append(f"- Record check: {p_['reason']}: odds {_x(p_['odds'])} (learned).")
     if not row["penalties"]:
