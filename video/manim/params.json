@@ -1,0 +1,104 @@
+{
+ "model": {
+  "prior": 0.081,
+  "rho": 0.03,
+  "iterations": 55,
+  "lrs": [
+   [
+    "Description, dedicated",
+    380
+   ],
+   [
+    "Capabilities, dedicated",
+    120
+   ],
+   [
+    "Specialties, dedicated",
+    109
+   ],
+   [
+    "Facility name, dedicated",
+    100
+   ],
+   [
+    "Equipment, dedicated",
+    49
+   ],
+   [
+    "Procedures, dedicated",
+    44
+   ],
+   [
+    "Capabilities, in a long list",
+    15
+   ]
+  ]
+ },
+ "checks": {
+  "service": "burn care",
+  "p_text": 0.82,
+  "evidence_text": "one dedicated mention: \u201cBurn Unit (specialized ward)\u201d",
+  "flag": "same record, but it looks like a clinic",
+  "flag_odds": 0.06,
+  "p": 0.21,
+  "example": "Yashwantrao Chavan Hospital, Pune: \u201cBurns Management\u201d, inside a long list",
+  "ex_p": 0.49,
+  "lo": 0.06,
+  "hi": 0.73,
+  "flag_example": "Geetanjali Hospital: \u201cBurn Unit (specialized ward for burn patients)\u201d",
+  "p0": 0.82,
+  "rho": 0.03,
+  "ex_name": "Yashwantrao Chavan: \u201cBurns Management\u201d, once, inside a long list"
+ },
+ "access": {
+  "km": 39.8,
+  "basis2": "Lancet Commission on Global Surgery: caesarean section within 2 h",
+  "basis1": "DOPPS: one-way dialysis travel over 60 min linked to higher mortality",
+  "loc_sd_km": 3.2
+ },
+ "odds": {
+  "base_p": 0.081,
+  "base_odds": "1 : 11",
+  "ded": [
+   "capabilities, a dedicated entry",
+   120
+  ],
+  "list": [
+   "capabilities, inside a long list",
+   15
+  ],
+  "silent": [
+   "procedures, silent",
+   0.24
+  ],
+  "sam": {
+   "name": "Samarpan",
+   "factors": [
+    "44",
+    "49",
+    "120",
+    "0.87",
+    "0.98",
+    "0.96"
+   ],
+   "deff": "1.07",
+   "signal": "0.95",
+   "odds": "8,019 : 1",
+   "p": "\u2265 99%"
+  },
+  "sat": {
+   "name": "Satyarthi",
+   "factors": [
+    "15",
+    "0.24",
+    "0.49",
+    "0.87",
+    "0.98",
+    "0.96"
+   ],
+   "signal": "0.95",
+   "odds": "1 : 8",
+   "p": "11%"
+  }
+ }
+}

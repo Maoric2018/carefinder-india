@@ -4,4 +4,19 @@ __pycache__/
 .DS_Store
 .claude/
 *.pdf
-video/
+# video project: keep the source and the assets it needs; skip installs, renders, logs and old takes
+video/node_modules/
+video/out/
+video/manim/media/
+video/manim/*.log
+video/manim/*_v4.py
+video/public/manim/
+video/public/audio/raw/
+video/public/audio_v*/
+video/public/demo/
+video/public/plan/
+video/public/shots/
+video/public/img/*.log
+video/voiceover_v*.json
+video/src/timing_v*.json
+video/src/timing_raw_v*.json

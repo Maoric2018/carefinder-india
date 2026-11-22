@@ -1,0 +1,45 @@
+{
+ "model": {
+  "title": 0.2,
+  "nokey": 1.8,
+  "cant": 4.81,
+  "snorkel": 5.43,
+  "witness": 8.72,
+  "em": 10.28,
+  "guess": 13.35,
+  "reest": 14.69,
+  "conv": 16.33,
+  "end": 18.2
+ },
+ "odds": {
+  "title": 0.2,
+  "defn": 1.63,
+  "ded": 4.27,
+  "list": 6.51,
+  "silent": 8.37,
+  "base": 11.16,
+  "sam": 12.7,
+  "sat": 14.34,
+  "end": 17.8
+ },
+ "checks": {
+  "title": 0.2,
+  "only": 1.35,
+  "clinic": 3.5,
+  "fields": 4.99,
+  "interval": 8.4,
+  "refit": 9.67,
+  "middle": 11.83,
+  "end": 13.2
+ },
+ "access": {
+  "title": 0.2,
+  "road": 1.8,
+  "compute": 5.95,
+  "csec": 7.67,
+  "dial": 9.51,
+  "sam": 11.59,
+  "rank": 12.88,
+  "end": 14.3
+ }
+}

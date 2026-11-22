@@ -1,0 +1,46 @@
+[
+ {
+  "id": "s1_hook",
+  "text": "[softly] A health worker in rural Bihar has a patient who needs dialysis. [curious] Where should she send him? [serious] And why should she trust the answer?"
+ },
+ {
+  "id": "s2_data",
+  "text": "[fast-paced] The Virtue Foundation dataset lists ten thousand Indian health facilities, scraped from the web. [skeptical] But a page that says dialysis isn't proof. Checked against India Post's PIN directory, one in ten map pins sits over ninety kilometers from the record's own city. Seven hundred seventy-two records name three or more other hospitals, likely merged pages, and thirty-five rows have shifted columns."
+ },
+ {
+  "id": "s3_demo",
+  "text": "[excited] So we built CareFinder India, a Databricks App. [fast-paced] Pick one of twenty-two services: dialysis. Type the village: Bakhtiyarpur. No hospital record mentions it, so we find it among India Post's hundred thousand post offices. Find care. Of a thousand and fifty-two facilities that mention dialysis, we map the best five, each with a probability, an interval, and quotes."
+ },
+ {
+  "id": "s4_results",
+  "text": "[fast-paced] Top pick, Samarpan Trauma Centre: three fields of its record say dialysis, plus its own website, and no red flags: above ninety-nine percent. The nearest hospital, Satyarthi, mentions dialysis once, in a list: eleven percent, and the app says why it ranked lower. Open the card: every step of the arithmetic is there."
+ },
+ {
+  "id": "s5_pune",
+  "text": "[fast-paced] A PIN code works too: burn care near Pune. Card four, Yashwantrao Chavan Hospital, lists burns once in a long list, and none of its sources is its own website, which the data says multiplies the odds by point four three. Result: forty-nine percent, interval six to seventy-three. Marked Low: call ahead."
+ },
+ {
+  "id": "s6_model",
+  "text": "[explaining, fast-paced] So where do these numbers come from? Nobody labeled which hospitals really offer dialysis, so there's no answer key to train a classifier. Stanford's Snorkel calls this weak supervision: learning the truth from many noisy sources. Each field of a record is a noisy witness. A latent class model treats the truth as hidden, and expectation-maximization alternates: guess each record's truth from its witnesses, then re-estimate each witness's reliability. Fifty-five rounds, and it converges."
+ },
+ {
+  "id": "s7_odds",
+  "text": "[fast-paced] What it learns are likelihood ratios: how much likelier each mention is from a hospital that really does dialysis. A dedicated capabilities entry: a hundred and twenty times. The same word in a long list: fifteen. Silence counts too: a silent procedures field cuts the odds fourfold. Start at the eight percent base rate and multiply. Samarpan reaches eight thousand to one. Satyarthi's one listed mention, against five silent fields: eleven percent."
+ },
+ {
+  "id": "s8_checks",
+  "text": "[serious, fast-paced] Red flags are learned too, and can only lower the odds: for burn care, looking like a clinic cuts them sixteen-fold. Fields copied from one page aren't independent, so we measure their overlap and discount agreement. The interval comes from the bootstrap: refit the whole model on a hundred resampled datasets and keep the middle ninety percent."
+ },
+ {
+  "id": "s9_access",
+  "text": "[fast-paced] Last: can she get there in time? Roads wind, so we take one point four times the straight line at about thirty-five kilometers an hour, with uncertainty, and compute the chance of arriving within the clinical window: two hours for a C-section, per the Lancet Commission; one hour for dialysis, per a large dialysis study. Samarpan: ten percent. The rank multiplies the two."
+ },
+ {
+  "id": "s10_plan",
+  "text": "[upbeat, fast-paced] The second tab is for NGOs and district planners. Pick a service, a state, and a need indicator from NFHS-5, India's national health survey. For C-sections in Bihar, we place each district at the center of its post offices and ask: is a High-confidence hospital likely within two hours? For seventeen of thirty-eight, no. Red circles mark those gaps, sized by need. Katihar ranks first: four percent of births by C-section, and the nearest well-documented hospital ninety-four kilometers away."
+ },
+ {
+  "id": "s11_close",
+  "text": "[warm] CareFinder India. Every answer cited, every number with its uncertainty, and a Genie space that answers in plain English. Built on Databricks Free Edition."
+ }
+]

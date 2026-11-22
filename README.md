@@ -22,6 +22,7 @@ a **confidence label**, the **caveats** that lowered it, and a plain-language **
 | `notebooks/03_find_care.py` | Widget-driven demo: pick a service, type a place, Run all |
 | `app.py`, `app.yaml` | Streamlit Databricks App: **Find care** (one patient) and **Plan coverage** (districts) tabs |
 | `tests/` | Synthetic messy data + tests (`make_sample.py` is NOT real data) |
+| `video/` | Source of the 2:27 demo video: Remotion scenes, Manim math animations, voiceover script ([video/README.md](video/README.md)) |
 
 ## How a recommendation is scored
 
