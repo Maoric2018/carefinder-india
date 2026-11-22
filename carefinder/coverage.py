@@ -5,8 +5,8 @@ Joins three sources:
   * India Post PIN directory          -> a centre point for every district,
   * NFHS-5 district health indicators -> how much each district needs the service.
 
-A district counts as covered when a High-confidence facility for the service is within the service's travel scale
-(the same distance scale the ranking uses). A gap means no strongly documented claim in this dataset, which is not
+A district counts as covered when a High-confidence facility for the service can more likely than not be reached
+within the service's clinical time window (the same access model the ranking uses, access.py). A gap means no strongly documented claim in this dataset, which is not
 proof the service is absent.
 """
 
@@ -20,6 +20,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from . import access
 from .engine import LABELS, CareFinder, confidence_label
 from .geo import haversine_km, norm_city, norm_state, same_state
 from .taxonomy import Service
@@ -179,24 +180,24 @@ def place_districts(nfhs: pd.DataFrame, finder: CareFinder) -> pd.DataFrame:
 
 
 def facility_confidence(finder: CareFinder, service: Service) -> pd.DataFrame:
-    """Every facility with a direct mention of the service and a usable location, with its confidence."""
+    """Every facility with a direct mention of the service and a usable location, with its learned probability."""
+    sc = finder.scores_for(service)
     rows = []
-    for rec, ev in zip(finder._records, finder.evidence_for(service)):
+    for i, (rec, ev) in enumerate(zip(finder._records, finder.evidence_for(service))):
         if not ev.has_core or rec["loc_lat"] is None:
             continue
-        trust = math.prod(m for m, _ in finder.trust_factors(rec, service, ev))
-        conf = ev.score * trust
+        p = float(sc["p"][i])
         rows.append({"name": rec["name"] or "(unnamed facility)", "city": rec["city"], "state": rec["state_n"],
-                     "lat": float(rec["loc_lat"]), "lon": float(rec["loc_lon"]), "confidence": round(conf, 3),
-                     "label": confidence_label(conf), "dup_group": rec["dup_group"]})
+                     "lat": float(rec["loc_lat"]), "lon": float(rec["loc_lon"]), "confidence": round(p, 3),
+                     "label": confidence_label(p), "loc_sd": finder.location_sd(rec), "dup_group": rec["dup_group"]})
     df = pd.DataFrame(rows)
     return df.sort_values("confidence", ascending=False).drop_duplicates("dup_group") if len(df) else df
 
 
 def coverage(districts: pd.DataFrame, facilities: pd.DataFrame, service: Service, need: str) -> pd.DataFrame:
-    """Per district: nearest High-confidence facility, counts within the travel scale, status and need."""
+    """Per district: nearest High-confidence facility, how many are reachable in time (P ≥ 0.5), status and need."""
     ind = INDICATORS[need]
-    scale = service.travel_km
+    hours, _ = access.window(service.key)
     out = districts.copy()
     out["need_value"] = out[need]
     high = facilities[facilities["confidence"] >= HIGH] if len(facilities) else facilities
@@ -211,12 +212,12 @@ def coverage(districts: pd.DataFrame, facilities: pd.DataFrame, service: Service
             j = int(np.argmin(d))
             near_name.append(high["name"].iloc[j])
             near_km.append(round(float(d[j]), 1))
-            n_high.append(int((d <= scale).sum()))
+            n_high.append(int((access.p_reach(d, hours, high["loc_sd"].to_numpy()) >= 0.5).sum()))
         else:
             near_name.append(None), near_km.append(np.nan), n_high.append(0)
         if len(med):
             dm = haversine_km(med["lat"].to_numpy(), med["lon"].to_numpy(), lat, lon)
-            n_med.append(int((dm <= scale).sum()))
+            n_med.append(int((access.p_reach(dm, hours, med["loc_sd"].to_numpy()) >= 0.5).sum()))
         else:
             n_med.append(0)
     out["nearest_high"] = near_name

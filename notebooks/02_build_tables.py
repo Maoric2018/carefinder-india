@@ -51,8 +51,10 @@ display(ev.groupby(["service_label", "confidence_label"]).size().unstack(fill_va
 
 # COMMAND ----------
 
+from carefinder import access
 svc = pd.DataFrame([{"service": s.key, "label": s.label, "core_terms": ", ".join(s.core),
-                     "support_terms": ", ".join(s.support), "travel_km": s.travel_km,
+                     "support_terms": ", ".join(s.support), "window_h": access.window(s.key)[0],
+                     "window_basis": access.window(s.key)[1], "reach_km": round(access.reach_km(access.window(s.key)[0]), 1),
                      "needs_hospital": s.needs_hospital, "min_beds": s.min_beds} for s in SERVICES.values()])
 spark.createDataFrame(svc).write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(f"{TARGET}.services")
 
@@ -71,11 +73,14 @@ display(spark.sql(f"SELECT option_rank, facility_name, city, distance_km, confid
 # Column comments help Genie answer questions correctly.
 comments = {
     "facility_service_evidence": {
-        "evidence_score": "0-1. How strongly the facility's own record says it offers the service (more independent fields = higher).",
-        "trust": "0-1 multiplier for record problems: conflicting location, possible merged record, wrong facility type, too few beds, etc.",
-        "confidence": "evidence_score x trust. High >= 0.70, Medium >= 0.45, otherwise Low.",
+        "evidence_score": "0-1. Probability the facility offers the service given only what its record text says (latent class model fitted by EM; field reliabilities learned from how often fields agree).",
+        "trust": "Effect of record-quality flags (clinic for a hospital service, merged record, no sources, ...) on that probability, learned from the data: confidence / evidence_score.",
+        "confidence": "Probability the facility offers the service given its record text and flags. High >= 0.80, Medium >= 0.50, otherwise Low. conf_lo-conf_hi is a 90% bootstrap interval.",
+        "conf_lo": "Lower end of the 90% bootstrap interval for confidence.",
+        "conf_hi": "Upper end of the 90% bootstrap interval for confidence.",
+        "loc_sd_km": "How far off the facility location may be (km), from how it was placed.",
         "citations": "JSON list of quoted text from the facility record that supports the claim.",
-        "caveats": "Reasons the trust score was reduced, separated by |.",
+        "caveats": "Record-quality flags with their learned odds multipliers, and location notes, separated by |.",
         "top_quote": "The strongest quote from the facility record that says it offers the service.",
         "district": "District (from the facility record, or from its PIN code via the India Post directory).",
         "state": "State, lower case (taken from the PIN code when the record's state field was not a real state).",

@@ -9,8 +9,8 @@ from functools import lru_cache
 from .names import other_facility, tokens
 from .taxonomy import Service, normalize
 
-# How much a single field counts as evidence. They are combined like independent witnesses
-# (noisy-OR): 1 - prod(1 - weight), so corroboration across fields raises the score.
+# Prior guesses used only for the quick "heuristic score" (ev.score). Ranking uses the learned model in
+# model.py, whose field reliabilities are estimated from the data by EM instead of set by hand.
 FIELD_WEIGHTS: dict[str, float] = {
     "procedure": 0.60,
     "equipment": 0.60,
@@ -68,6 +68,7 @@ class Evidence:
     foreign: list[Hit] = field(default_factory=list)  # mentions that describe a different facility
     specific: bool = False
     listed_only: bool = False  # every direct mention is inside a long list
+    field_strength: dict[str, float] = field(default_factory=dict)  # field -> 1.0 dedicated / 0.6 listed mention
 
     @property
     def has_core(self) -> bool:
@@ -189,6 +190,7 @@ def score_evidence(row, service: Service, max_hits_per_field: int = 3) -> Eviden
             ev.hits.append(h)
 
     support_fields -= core_fields
+    ev.field_strength = dict(core_strength)
     ev.core_fields = [f for f in FIELD_WEIGHTS if f in core_fields]
     ev.support_fields = [f for f in FIELD_WEIGHTS if f in support_fields]
     ev.listed_only = bool(core_strength) and max(core_strength.values()) < CORE_STRENGTH

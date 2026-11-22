@@ -17,6 +17,7 @@ import streamlit as st
 from carefinder import SERVICES, CareFinder
 from carefinder.coverage import (DEFAULT_NEED, INDICATORS, SERVICE_NEED, audit_summary, coverage, facility_confidence,
                                  place_districts, prepare_nfhs)
+from carefinder import access
 from carefinder.engine import method_markdown
 
 st.set_page_config(page_title="CareFinder India", page_icon="🩺", layout="wide")
@@ -87,6 +88,8 @@ div[data-testid="stFormSubmitButton"] > button:focus:not(:active) { background:#
 .cf-m .k { display:block; font-size:11px; font-weight:700; color:#64748B; text-transform:uppercase; letter-spacing:.06em; }
 .cf-m .v { display:block; font-size:18px; font-weight:800; color:#0F172A; margin-top:2px; }
 .cf-m .v.s { font-size:13px; font-weight:600; line-height:1.35; margin-top:4px; }
+.cf-m .u { display:block; font-size:11.5px; color:#64748B; margin-top:1px; }
+.cf-flags em { color:#9A3412; font-style:normal; font-size:12px; opacity:.8; }
 .cf-bar { height:5px; border-radius:9px; background:#E2E8F0; margin-top:6px; overflow:hidden; }
 .cf-bar i { display:block; height:100%; border-radius:9px; }
 .cf-why-h { font-size:12px; font-weight:700; color:#64748B; text-transform:uppercase; letter-spacing:.07em; margin:4px 0 6px; }
@@ -261,6 +264,7 @@ def planner(districts: pd.DataFrame | None):
                  format_func=lambda k: INDICATORS[k].label)
     need = INDICATORS[st.session_state.plan_need]
     state = st.session_state.plan_state
+    hours, basis = access.window(service.key)
 
     fac = facilities_for(service.key)
     pool = districts if state == "All India" else districts[districts["state_label"] == state]
@@ -276,7 +280,7 @@ def planner(districts: pd.DataFrame | None):
     st.markdown(
         '<div class="cf-kpis">'
         f'<div class="cf-kpi"><b class="red">{n_gap} of {len(placed)}</b><span>districts with no well-documented '
-        f'{esc(noun)} within {service.travel_km:.0f} km of their centre</span></div>'
+        f'{esc(noun)} reachable within {hours:.0f} h (≈{access.reach_km(hours):.0f} km) of their centre</span></div>'
         f'<div class="cf-kpi"><b>{(f"{median_km:.0f} km" if median_km == median_km else "n/a")}</b><span>median distance from a district centre to the nearest '
         f'well-documented {esc(noun)}</span></div>'
         f'<div class="cf-kpi"><b>{n_high_state}</b><span>facilities with a High-confidence {esc(noun)} claim in '
@@ -317,8 +321,8 @@ def planner(districts: pd.DataFrame | None):
     unplaced = cov[cov["status"] == "not placed"]["district"].tolist()
     st.markdown(
         f'<div class="cf-note trade"><span class="i">How to read this</span><span><b>Covered</b> means a facility '
-        f'with a High-confidence {esc(noun)} claim is within {service.travel_km:.0f} km of the district centre (the '
-        f'same distance scale the search uses). <b>Only weak claims</b> means only Medium-confidence ones are. A gap '
+        f'with a High-confidence {esc(noun)} claim can more likely than not be reached within {hours:.0f} h of the '
+        f'district centre ({esc(basis)}; the same travel-time model the search uses). <b>Only weak claims</b> means only Medium-confidence ones are. A gap '
         f'means no well-documented claim in this dataset, which is not proof the service is missing: verify locally. '
         f'District centres come from India Post post offices.'
         + (f' {len(unplaced)} district(s) could not be placed: {esc(", ".join(unplaced[:8]))}'
@@ -329,7 +333,7 @@ def planner(districts: pd.DataFrame | None):
                      "medium_within", "need_value", "placed_by"]].rename(columns={
             "district": "District", "state_label": "State", "status": "Status",
             "nearest_high": "Nearest well-documented facility", "nearest_high_km": "Distance (km)",
-            "high_within": f"High within {service.travel_km:.0f} km", "medium_within": f"Medium within {service.travel_km:.0f} km",
+            "high_within": f"High reachable within {hours:.0f} h", "medium_within": f"Medium reachable within {hours:.0f} h",
             "need_value": f"{need.label} (%)", "placed_by": "District centre from"})
         st.dataframe(table, use_container_width=True, hide_index=True)
         st.download_button("Download this table (CSV)", table.to_csv(index=False),
@@ -382,9 +386,13 @@ def card(r) -> str:
     more = len(core) - 3
     if more > 0:
         quotes += f'<div class="cf-q"><em>+ {more} more quote{"s" if more > 1 else ""} below</em></div>'
-    if r.penalties:
-        flags = '<div class="cf-flags bad">' + "".join(
-            f'<div><b>−{p["pct"]}%</b> {esc(p["reason"][0].upper() + p["reason"][1:])}</div>' for p in r.penalties) + '</div>'
+    def _odds(v):
+        return f"×{v:.2f}" if v < 1 else f"×{v:.1f}"
+    flag_rows = [f'<div><b>odds {_odds(p["odds"])}</b> {esc(p["reason"][0].upper() + p["reason"][1:])} '
+                 f'<em>(learned)</em></div>' for p in r.penalties if p["odds"] < 0.995]
+    flag_rows += [f'<div><b>±{r.loc_sd_km:.0f} km</b> {esc(n[0].upper() + n[1:])}</div>' for n in r.location_notes]
+    if flag_rows:
+        flags = '<div class="cf-flags bad">' + "".join(flag_rows) + '</div>'
     else:
         flags = ('<div class="cf-flags ok"><b>✓ No red flags.</b> Location matches its address and the record '
                  'looks like a single facility.</div>')
@@ -408,11 +416,13 @@ def card(r) -> str:
         f'<div class="cf-pill" style="color:{fg};background:{bg};border-color:{border}"><i style="background:{fg}"></i>'
         f'{r.confidence_label} confidence · {r.confidence:.2f}</div></div>'
         f'<div class="cf-metrics">'
-        f'<div class="cf-m"><span class="k">Distance</span><span class="v">{r.distance_km:.1f} km</span></div>'
-        f'<div class="cf-m"><span class="k">Evidence</span><span class="v">{r.evidence_score:.2f}</span>'
-        f'<div class="cf-bar"><i style="width:{r.evidence_score*100:.0f}%;background:#0F766E"></i></div></div>'
-        f'<div class="cf-m"><span class="k">Trust</span><span class="v">{r.trust:.2f}</span>'
-        f'<div class="cf-bar"><i style="width:{r.trust*100:.0f}%;background:{fg}"></i></div></div>'
+        f'<div class="cf-m"><span class="k">Distance</span><span class="v">{r.distance_km:.1f} km</span>'
+        f'<span class="u">≈ {r.travel_h * 60:.0f} min by road</span></div>'
+        f'<div class="cf-m"><span class="k">Offers it</span><span class="v">{r.confidence:.2f}</span>'
+        f'<span class="u">90%: {r.conf_lo:.2f}-{r.conf_hi:.2f}</span>'
+        f'<div class="cf-bar"><i style="width:{r.confidence*100:.0f}%;background:{fg}"></i></div></div>'
+        f'<div class="cf-m"><span class="k">Gets there in {r.window_h:.0f} h</span><span class="v">{r.access:.0%}</span>'
+        f'<div class="cf-bar"><i style="width:{r.access*100:.0f}%;background:#2563EB"></i></div></div>'
         f'<div class="cf-m"><span class="k">Found in</span><span class="v s">{esc(r.evidence_fields) or "—"}</span></div>'
         f'</div><div class="cf-why-h">Why this facility: its own record says</div>{quotes}{flags}{goods}'
         + (f'<div class="cf-contact">{contact}</div>' if contact else "") + '</div>')
@@ -451,23 +461,26 @@ def deck(results: pd.DataFrame, loc) -> pdk.Deck:
                     tooltip={"text": "{tip}"})
 
 
-def how_it_works(service=None):
+def how_it_works(service=None, model=None):
     st.markdown(
         '<div class="cf-label">How we decide</div><div class="cf-steps">'
-        '<div class="cf-step"><div class="no">1</div><h4>Evidence</h4><p>We search each facility\'s own record '
-        '(procedures, equipment, capabilities, description) for the service. Each place it is stated counts as a '
-        'separate witness, and every match is shown to you as a quote.</p></div>'
-        '<div class="cf-step"><div class="no">2</div><h4>Trust</h4><p>We lower the score for red flags: coordinates '
-        'that contradict the address, records that merge two hospitals, a clinic claiming hospital-only care, or text '
-        'saying the service is planned or unavailable.</p></div>'
-        '<div class="cf-step"><div class="no">3</div><h4>Distance</h4><p>Closer is better, on a scale that fits the '
-        'service: about 25 km for an emergency room, 150 km for planned cardiac surgery. We always show the nearest '
-        'option too, and why it ranked where it did.</p></div></div>'
-        '<div class="cf-formula">rank = <span>evidence</span> × <span>trust</span> × '
-        '<span>e<sup>−km ÷ scale</sup></span> &nbsp;·&nbsp; High ≥ 0.70 · Medium ≥ 0.45 · Low below</div>',
+        '<div class="cf-step"><div class="no">1</div><h4>Evidence, weighed by the data</h4><p>Each part of a record '
+        '(procedures, equipment, capabilities, description) is a witness. We learn how reliable each one is from how '
+        'often they agree with each other across all 10,088 records (a latent class model fitted with EM), then compute '
+        'the probability the facility offers the service, with a 90% bootstrap interval.</p></div>'
+        '<div class="cf-step"><div class="no">2</div><h4>Record checks, also learned</h4><p>Flags such as "looks like '
+        'a clinic", "may merge several hospitals" or "no source to check" change the odds by amounts estimated from '
+        'the data, and are shown with each result. Location problems widen the distance uncertainty instead of '
+        'lowering confidence.</p></div>'
+        '<div class="cf-step"><div class="no">3</div><h4>Can they get there in time?</h4><p>Road time is estimated from '
+        f'distance (×{access.DETOUR} detour, ~{access.SPEED_KMH:.0f} km/h, with uncertainty). We compute the chance of '
+        'arriving within the service\'s clinical window: 2 h for a C-section (Lancet Commission on Global Surgery), '
+        '1 h for trauma, 1 h each way for dialysis. The nearest option is always shown too.</p></div></div>'
+        '<div class="cf-formula">rank = <span>P(offers it | its record)</span> × <span>P(arrives in time)</span>'
+        ' &nbsp;·&nbsp; High ≥ 0.80 · Medium ≥ 0.50 · Low below</div>',
         unsafe_allow_html=True)
-    with st.expander("Full method: every weight and trade-off"):
-        st.markdown(method_markdown(service))
+    with st.expander("Full method: the model, every learned weight, and our assumptions"):
+        st.markdown(method_markdown(service, model))
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -547,7 +560,7 @@ with tab_find:
                             unsafe_allow_html=True)
                 st.download_button("Download these results (JSON)", res.to_json(), file_name="carefinder_results.json",
                                    use_container_width=True)
-            how_it_works(res.service)
+            how_it_works(res.service, res.model)
 
 with tab_plan:
     try:

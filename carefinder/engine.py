@@ -9,34 +9,27 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from .evidence import (FIELD_LABELS, FIELD_WEIGHTS, LIST_STRENGTH, SPECIFIC_DETAIL_WEIGHT, SUPPORT_STRENGTH,
-                       Evidence, score_evidence)
+from . import access
+from .evidence import FIELD_LABELS, FIELD_WEIGHTS, Evidence, score_evidence
 from .geo import PinDirectory, ResolvedLocation, haversine_km
+from .model import COVARIATE_TEXT, COVARIATES, FIELDS, INDICATORS, LatentClassModel, fit
 from .quality import assess
 from .schema import detect_columns, standardize
 from .taxonomy import SERVICES, Service, ad_hoc_service, find_service
 
-# Multipliers applied to the evidence score. Kept in one place so the "how we decided" text
-# shown to users is generated from the same numbers the code uses.
-TRUST = {
-    "location_conflict": (0.60, "its location is contradictory"),
-    "location_fixed": (0.85, "its coordinates contradicted its address, so we placed it by its address instead"),
-    "address_inconsistent": (0.90, "its address is internally inconsistent"),
-    "location_shared": (0.95, "its coordinates are shared with other facilities (probably a city-centre placeholder)"),
-    "location_city": (0.90, "it has no usable coordinates, so distance is from its city centre"),
-    "location_pin": (0.92, "it has no usable coordinates, so distance is from its PIN area"),
-    "pin_state_mismatch": (0.85, "its PIN code belongs to a different state than the one listed"),
-    "merged": (0.80, "the record may merge more than one facility"),
-    "corrupted": (0.60, "the record's columns look shifted (corrupted row)"),
-    "foreign": (0.90, "some of its mentions of this service are about other facilities, so we ignored them"),
-    "no_sources": (0.90, "it has no source URL to check against"),
-    "no_own_site": (0.95, "none of its sources is the facility's own website"),
-    "wrong_kind": (0.40, "it is listed as a pharmacy or dental practice"),
-    "clinic": (0.80, "it looks like a clinic, and this service usually needs a hospital"),
-    "too_small": (0.70, "its listed bed count is below what this service usually needs"),
-    "negated": (0.70, "some of its own text says the service is unavailable, planned or referred elsewhere"),
+# Location problems no longer lower confidence (a wrong pin does not make a claim false); they widen the
+# uncertainty of the distance instead (access.py). These texts explain why.
+LOCATION_NOTES = {
+    "coords_conflict": "its coordinates contradict its city and PIN code, and we could not resolve which is right",
+    "coords_fixed": "its coordinates contradicted its address, so we placed it by its address instead",
+    "address_inconsistent": "its city and PIN code disagree",
+    "shared coordinates": "its coordinates are shared with other facilities (probably a city-centre placeholder)",
+    "city centre": "it has no usable coordinates, so it is placed at its city centre",
+    "PIN area": "it has no usable coordinates, so it is placed at its PIN area",
+    "district centre": "it has no usable coordinates, so it is placed at its district centre",
 }
-LABELS = ((0.70, "High"), (0.45, "Medium"), (0.0, "Low"))
+# Labels on the posterior probability that the facility offers the service.
+LABELS = ((0.80, "High"), (0.50, "Medium"), (0.0, "Low"))
 
 
 def confidence_label(score: float) -> str:
@@ -52,6 +45,7 @@ class SearchResult:
     notes: list[str] = field(default_factory=list)
     error: str = ""
     candidates: int = 0
+    model: LatentClassModel | None = None
 
     def to_markdown(self) -> str:
         if self.error:
@@ -72,13 +66,17 @@ class SearchResult:
 
 class CareFinder:
     def __init__(self, raw: pd.DataFrame, column_overrides: dict[str, str] | None = None,
-                 pin_directory: pd.DataFrame | None = None):
+                 pin_directory: pd.DataFrame | None = None, n_boot: int = 100):
         """raw: facility table. pin_directory: optional India Post PIN directory (one row per post office)."""
         self.mapping = detect_columns(raw.columns, column_overrides)
         self.pin_dir = PinDirectory(pin_directory) if pin_directory is not None else None
         self.facilities, self.gazetteer = assess(standardize(raw, self.mapping), self.pin_dir)
         self._records = self.facilities.to_dict("records")
         self._evidence: dict[str, list[Evidence]] = {}
+        self._models: dict[str, LatentClassModel] = {}
+        self._xz: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        self._scores: dict[str, dict[str, np.ndarray]] = {}
+        self.n_boot = n_boot
 
     # ---- evidence -------------------------------------------------------------------------
     def evidence_for(self, service: Service) -> list[Evidence]:
@@ -86,49 +84,70 @@ class CareFinder:
             self._evidence[service.key] = [score_evidence(r, service) for r in self._records]
         return self._evidence[service.key]
 
-    def trust_factors(self, row: dict, service: Service, ev: Evidence) -> list[tuple[float, str]]:
-        f: list[tuple[float, str]] = []
-
-        def add(key, detail=""):
-            mult, reason = TRUST[key]
-            f.append((mult, reason + (f" ({detail})" if detail else "")))
-
-        issue, quality = row["location_issue"], row["loc_quality"]
-        if issue == "coords_conflict":
-            add("location_conflict", row["location_detail"])
-        elif issue == "coords_fixed":
-            add("location_fixed", row["location_detail"])
-        elif issue == "address_inconsistent":
-            add("address_inconsistent", row["location_detail"])
-        elif quality == "shared coordinates":
-            add("location_shared", f"{row['coord_shared_n']} others")
-        elif quality == "city centre":
-            add("location_city")
-        elif quality in ("PIN area", "district centre"):
-            add("location_pin")
-        if row["pin_state_mismatch"]:
-            add("pin_state_mismatch", f"PIN {row['postcode']} vs {row['state']}")
-        if row["merge_reasons"]:
-            add("merged", "; ".join(row["merge_reasons"]))
-        if row["corrupted"]:
-            add("corrupted")
-        if ev.foreign:
-            add("foreign", f"e.g. “{ev.foreign[0].snippet}”")
-        if not row["source_urls"]:
-            add("no_sources")
-        elif not row["own_site"]:
-            add("no_own_site")
+    def record_flags(self, row: dict, service: Service, ev: Evidence) -> list[str]:
+        """Record-quality covariates for the evidence model (their effects are learned, not set by hand)."""
         kind = row["kind"]
-        if kind == "pharmacy" or (kind == "dental" and service.key != "dental"):
-            add("wrong_kind", kind)
-        elif kind in ("clinic", "diagnostic") and service.needs_hospital:
-            add("clinic")
-        if service.min_beds and row["capacity"] is not None and row["capacity"] < service.min_beds:
-            add("too_small", f"{row['capacity']:.0f} beds listed, usually ≥{service.min_beds}")
-        negated_core = [h for h in ev.negated if h.kind == "core"]
-        if negated_core:
-            add("negated", f'"{negated_core[0].snippet}"')
-        return f
+        flags = {
+            "clinic_for_hospital_service": kind in ("clinic", "diagnostic") and service.needs_hospital,
+            "pharmacy_or_dental": kind == "pharmacy" or (kind == "dental" and service.key != "dental"),
+            "merged_record": bool(row["merge_reasons"]),
+            "corrupted_row": bool(row["corrupted"]),
+            "mentions_other_facilities": bool(ev.foreign),
+            "no_source_urls": not row["source_urls"],
+            "no_own_website": bool(row["source_urls"]) and not row["own_site"],
+            "too_few_beds": bool(service.min_beds and row["capacity"] is not None and row["capacity"] < service.min_beds),
+        }
+        return [c for c in COVARIATES if flags[c]]
+
+    def location_notes(self, row: dict) -> list[str]:
+        notes = []
+        if row["location_issue"] in LOCATION_NOTES:
+            notes.append(LOCATION_NOTES[row["location_issue"]] + (f" ({row['location_detail']})" if row["location_detail"] else ""))
+        elif row["loc_quality"] in LOCATION_NOTES:
+            notes.append(LOCATION_NOTES[row["loc_quality"]])
+        if row["pin_state_mismatch"]:
+            notes.append(f"its PIN code belongs to a different state than the one listed ({row['postcode']} vs {row['state']})")
+        return notes
+
+    def location_sd(self, row: dict) -> float:
+        sd = access.LOCATION_SD_KM.get(row["loc_quality"], 5.0)
+        if row["location_issue"] == "coords_fixed":
+            sd = max(sd, 8.0)
+        elif row["location_issue"] in ("coords_conflict", "address_inconsistent"):
+            sd = max(sd, 20.0)
+        return sd
+
+    def features(self, service: Service) -> tuple[np.ndarray, np.ndarray]:
+        """X: what each field says (0 none, 1 listed, 2 dedicated) + 3 signals; Z: record-quality flags."""
+        evs = self.evidence_for(service)
+        X = np.zeros((len(evs), len(INDICATORS)), dtype=int)
+        Z = np.zeros((len(evs), len(COVARIATES)), dtype=float)
+        for i, (rec, ev) in enumerate(zip(self._records, evs)):
+            for j, fld in enumerate(FIELDS):
+                st = ev.field_strength.get(fld)
+                X[i, j] = 0 if st is None else (2 if st >= 1.0 else 1)
+            X[i, len(FIELDS)] = int(bool(ev.support_fields) and not ev.core_fields)
+            X[i, len(FIELDS) + 1] = int(any(h.kind == "core" for h in ev.negated))
+            X[i, len(FIELDS) + 2] = int(ev.specific)
+            for c in self.record_flags(rec, service, ev):
+                Z[i, COVARIATES.index(c)] = 1.0
+        return X, Z
+
+    def model_for(self, service: Service) -> LatentClassModel:
+        if service.key not in self._models:
+            X, Z = self.features(service)
+            self._models[service.key] = fit(X, Z, n_boot=self.n_boot)
+            self._xz[service.key] = (X, Z)
+        return self._models[service.key]
+
+    def scores_for(self, service: Service) -> dict[str, np.ndarray]:
+        """Per record: p (posterior it offers the service), lo/hi (90% bootstrap interval), p_text (text only)."""
+        if service.key not in self._scores:
+            m = self.model_for(service)
+            X, Z = self._xz[service.key]
+            lo, hi = m.interval(X, Z)
+            self._scores[service.key] = {"p": m.posterior(X, Z), "lo": lo, "hi": hi, "p_text": m.evidence_only(X)}
+        return self._scores[service.key]
 
     # ---- search ---------------------------------------------------------------------------
     def search(self, service_query: str, location_query: str, top_k: int = 5,
@@ -159,23 +178,20 @@ class CareFinder:
             return result
 
         rows = [self._records[i] for i in idx]
+        sc = self.scores_for(service)
+        hours, basis = access.window(service.key)
         dist = haversine_km(np.array([r["loc_lat"] for r in rows], dtype=float),
                             np.array([r["loc_lon"] for r in rows], dtype=float), loc.lat, loc.lon)
-        table = []
-        for i, r, d in zip(idx, rows, dist):
-            ev = evs[i]
-            factors = self.trust_factors(r, service, ev)
-            trust = math.prod(m for m, _ in factors)
-            conf = ev.score * trust
-            table.append({"i": i, "distance_km": round(float(d), 1), "evidence": ev.score,
-                          "trust": round(trust, 3), "confidence": round(conf, 3),
-                          "proximity": math.exp(-float(d) / service.travel_km),
-                          "factors": factors})
-        cand = pd.DataFrame(table)
-        cand["rank_score"] = cand["confidence"] * cand["proximity"]
+        loc_sd = np.array([math.hypot(self.location_sd(r), loc.uncertainty_km or 0.0) for r in rows])
+        reach = access.p_reach(dist, hours, loc_sd)
+        cand = pd.DataFrame({"i": idx, "distance_km": np.round(dist, 1), "confidence": sc["p"][idx],
+                             "lo": sc["lo"][idx], "hi": sc["hi"][idx], "p_text": sc["p_text"][idx],
+                             "access": reach, "loc_sd": loc_sd})
+        # Expected value of sending the patient there: P(it offers the service) × P(they arrive in time).
+        cand["rank_score"] = cand["confidence"] * cand["access"]
         cand["dup_group"] = [self._records[i]["dup_group"] for i in cand["i"]]
 
-        limit = max_km or max(3 * service.travel_km, 100)
+        limit = max_km or max(3 * access.reach_km(hours), 100)
         within = cand[cand["distance_km"] <= limit]
         if within.empty:
             notes.append(f"No facility within {limit:.0f} km claims {service.label.lower()}. "
@@ -183,8 +199,8 @@ class CareFinder:
             within = cand.nsmallest(top_k * 3, "distance_km")
         ranked = within.sort_values("rank_score", ascending=False).drop_duplicates("dup_group")
         top = ranked.head(top_k)
-        # Always show the closest facility with strong evidence, even if the score put it just outside.
-        strong = ranked[(ranked["confidence"] >= LABELS[0][0]) & (ranked["distance_km"] <= service.travel_km)]
+        # Always show the closest facility with strong evidence that the patient can likely reach in time.
+        strong = ranked[(ranked["confidence"] >= LABELS[0][0]) & (ranked["access"] >= 0.5)]
         if len(strong) and len(top) >= top_k:
             closest_strong = strong.nsmallest(1, "distance_km")
             if int(closest_strong["i"].iloc[0]) not in set(top["i"].astype(int)):
@@ -198,14 +214,16 @@ class CareFinder:
         if int(nearest["i"]) not in set(top["i"].astype(int)):
             r = self._records[int(nearest["i"])]
             ev = evs[int(nearest["i"])]
+            flags = self.record_flags(r, service, ev)
             notes.append(
                 f"The nearest facility that mentions {service.label.lower()} is {r['name']} "
                 f"({_km(nearest['distance_km'])}), but it ranks lower: {confidence_label(nearest['confidence'])} "
-                f"confidence ({_evidence_summary(ev)}"
-                + (f"; {nearest['factors'][0][1]}" if nearest["factors"] else "") + ").")
+                f"confidence, {nearest['confidence']:.2f} ({_evidence_summary(ev)}"
+                + (f"; {COVARIATE_TEXT[flags[0]]}" if flags else "") + ").")
         if (top["confidence"].map(confidence_label) == "Low").any():
             notes.append("Results marked Low are weakly supported claims. Call ahead to confirm before travelling.")
 
+        result.model = self.model_for(service)
         result.results = pd.DataFrame([self._result_row(n + 1, t, service, loc) for n, t in enumerate(top.to_dict("records"))])
         return result
 
@@ -213,6 +231,10 @@ class CareFinder:
         i = int(t["i"])
         r = self._records[i]
         ev = self.evidence_for(service)[i]
+        model = self.model_for(service)
+        odds = model.odds_ratios()
+        flags = self.record_flags(r, service, ev)
+        hours, basis = access.window(service.key)
         unknowns = [label for key, label in (("capacity", "bed count"), ("num_doctors", "number of doctors"),
                                               ("year_established", "year established")) if r[key] is None]
         if not r["equipment"]:
@@ -222,22 +244,29 @@ class CareFinder:
         sources = list(r["source_urls"])
         if r["own_site"]:
             sources.sort(key=lambda u: r["own_site"] not in u.lower())
+        loc_notes = self.location_notes(r)
+        penalties = [{"odds": round(odds[c], 2), "pct": round((1 - odds[c]) * 100), "reason": COVARIATE_TEXT[c]}
+                     for c in flags if odds[c] < 0.995]  # flags the data says make no difference are not shown
+        p, p_text = float(t["confidence"]), float(t["p_text"])
         row = {
             "rank": rank, "id": r["id"], "name": r["name"] or "(unnamed facility)", "kind": r["kind"],
             "address": r["address"], "city": r["city"], "state": r["state"], "postcode": r["postcode"],
             "lat": r["loc_lat"], "lon": r["loc_lon"], "location_quality": r["loc_quality"],
-            "distance_km": t["distance_km"], "evidence_score": t["evidence"], "trust": t["trust"],
-            "confidence": t["confidence"], "confidence_label": confidence_label(t["confidence"]),
-            "rank_score": round(t["rank_score"], 4),
+            "distance_km": t["distance_km"], "travel_h": round(access.travel_hours(t["distance_km"]), 2),
+            "loc_sd_km": round(float(t["loc_sd"]), 1), "window_h": hours, "window_basis": basis,
+            "access": round(float(t["access"]), 3),
+            "evidence_score": round(p_text, 3), "trust": round(p / p_text, 3) if p_text > 0 else 1.0,
+            "confidence": round(p, 3), "conf_lo": round(float(t["lo"]), 3), "conf_hi": round(float(t["hi"]), 3),
+            "confidence_label": confidence_label(p), "rank_score": round(float(t["rank_score"]), 4),
             "evidence_fields": ", ".join(FIELD_LABELS[f] for f in ev.core_fields),
-            "citations": citations, "caveats": [reason for _, reason in t["factors"]],
-            "penalties": [{"pct": round((1 - m) * 100), "reason": reason} for m, reason in t["factors"]],
+            "citations": citations, "caveats": [p_["reason"] for p_ in penalties] + loc_notes,
+            "penalties": penalties, "location_notes": loc_notes,
             "specific": ev.specific, "listed_only": ev.listed_only, "unknowns": unknowns,
             "sources": sources[:5], "own_site": r["own_site"], "duplicates": int(r["dup_count"]),
             "capacity": r["capacity"], "num_doctors": r["num_doctors"], "year_established": r["year_established"],
             "phone": (r["phone"] or [None])[0], "website": (r["website"] or [None])[0],
         }
-        row["explanation"] = explain(row, ev, t["factors"], service, loc)
+        row["explanation"] = explain(row, ev, model, service, loc)
         return row
 
 
@@ -252,40 +281,49 @@ def _evidence_summary(ev: Evidence) -> str:
     return f"mentioned only in {fields}" if len(ev.core_fields) == 1 else f"mentioned in {fields}"
 
 
-def explain(row: dict, ev: Evidence, factors, service: Service, loc: ResolvedLocation) -> str:
-    lines = [f"**Why this facility for {service.label.lower()}?**"]
+def _x(v: float) -> str:
+    return f"×{v:.0f}" if v >= 10 else f"×{v:.1f}" if v >= 1 else f"×{v:.2f}"
+
+
+def explain(row: dict, ev: Evidence, model: LatentClassModel, service: Service, loc: ResolvedLocation) -> str:
+    noun = service.label.lower()
+    lines = [f"**Why this facility for {noun}?**"]
     core = [c for c in row["citations"] if c["kind"] == "core"]
     support = [c for c in row["citations"] if c["kind"] == "support"]
     n = len(ev.core_fields)
-    lines.append(f"- Its record mentions {service.label.lower()} in {n} field{'s' if n != 1 else ''}:")
+    lines.append(f"- Its record mentions {noun} in {n} field{'s' if n != 1 else ''}:")
     lines += [f'    - {c["field"]}: “{c["text"]}”' + (" _(inside a long list)_" if c.get("listed") else "")
               for c in core[:6]]
     support = sorted((c for c in support if len(c["text"]) <= 160), key=lambda c: len(c["text"]))
     if support:
         lines.append("- Related specialties/equipment: " + "; ".join(f'“{c["text"]}”' for c in support[:3]))
-    if ev.specific:
-        lines.append("- The claim includes concrete detail (counts, capacity or equipment brand), "
-                     "which is harder to get wrong than a generic list entry.")
-    if ev.listed_only:
-        lines.append("- It only appears inside long lists of specialities, not in a dedicated statement, "
-                     "so it counts for less.")
     if row.get("own_site"):
         lines.append(f"- Its sources include the facility's own website ({row['own_site']}).")
-    where = {"exact": "using the facility's own coordinates, which match its address",
-             "unverified coordinates": "using the facility's own coordinates (no address data to cross-check)",
-             "shared coordinates": "using approximate coordinates shared with other facilities",
-             "city centre": "measured from its city centre",
-             "PIN area": "measured from the centre of its PIN code area",
-             "district centre": "measured from its district centre",
-             "conflicting coordinates": "using coordinates we could not confirm"}[row["location_quality"]]
-    lines.append(f"- **{_km(row['distance_km'])}** from {loc.label}, {where}.")
 
-    lines.append(f"\n**How sure are we? {row['confidence_label']}** — evidence {row['evidence_score']:.2f} "
-                 f"× trust {row['trust']:.2f} = {row['confidence']:.2f}")
-    for mult, reason in factors:
-        lines.append(f"- −{(1 - mult) * 100:.0f}%: {reason}")
-    if not factors:
-        lines.append("- No red flags: location is consistent and the record looks like a single facility.")
+    lr = model.likelihood_ratios()
+    learned = []
+    for f in ev.core_fields:
+        kind = "dedicated" if ev.field_strength.get(f, 0) >= 1.0 else "listed"
+        learned.append(f"{FIELD_LABELS[f].lower()} ({'a dedicated mention' if kind == 'dedicated' else 'inside a list'}) "
+                       f"{_x(lr[f][kind])}")
+    if ev.specific:
+        learned.append(f"concrete detail {_x(lr['specific']['present'])}")
+    lines.append(f"\n**How likely is it that it offers {noun}? {row['confidence_label']}: {row['confidence']:.2f}** "
+                 f"(90% interval {row['conf_lo']:.2f}-{row['conf_hi']:.2f})")
+    lines.append(f"- Base rate: {model.prior():.0%} of records in this dataset are estimated to offer {noun}. "
+                 + ("Learned from the data, each piece of evidence multiplies the odds: " + ", ".join(learned) + "."
+                    if learned else ""))
+    lines.append(f"- From its text alone: {row['evidence_score']:.2f}.")
+    for p_ in row["penalties"]:
+        lines.append(f"- Record check: {p_['reason']}: odds {_x(p_['odds'])} (learned).")
+    if not row["penalties"]:
+        lines.append("- No record-quality flags.")
+
+    lines.append(f"\n**Can the patient get there in time?** {_km(row['distance_km'])} straight-line ≈ "
+                 f"{row['travel_h'] * 60:.0f} min by road ({access.DETOUR}× detour at {access.SPEED_KMH:.0f} km/h). "
+                 f"Chance of arriving within {row['window_h']:.0f} h: **{row['access']:.0%}** ({row['window_basis']}).")
+    if row["location_notes"]:
+        lines.append(f"- Location uncertain by about ±{row['loc_sd_km']:.0f} km: " + "; ".join(row["location_notes"]) + ".")
     if row["unknowns"]:
         lines.append(f"- Not in the data: {', '.join(row['unknowns'])}.")
     if row["duplicates"]:
@@ -295,64 +333,91 @@ def explain(row: dict, ev: Evidence, factors, service: Service, loc: ResolvedLoc
     return "\n".join(lines)
 
 
-def method_markdown(service: Service | None = None) -> str:
-    """Plain-language description of HOW results are produced, generated from the live constants."""
-    weights = ", ".join(f"{FIELD_LABELS[f]} {w:.2f}" for f, w in FIELD_WEIGHTS.items())
-    penalties = "\n".join(f"  - ×{m:.2f} if {reason}" for m, reason in TRUST.values())
+def method_markdown(service: Service | None = None, model: LatentClassModel | None = None) -> str:
+    """How results are produced, generated from the live constants and (if given) the service's fitted model."""
     labels = ", ".join(f"{label} ≥ {cut:.2f}" for cut, label in LABELS if cut > 0)
-    svc = ""
-    if service is not None and not service.key.startswith("custom:"):
-        svc = (f"\n\n**For {service.label}** we count these as direct mentions: {', '.join(service.core)}. "
-               f"These only corroborate: {', '.join(service.support) or 'none'}. "
-               f"Distance scale: {service.travel_km:.0f} km.")
-    return f"""**How we decide**
+    out = f"""**How we decide**
 
 1. **Find claims.** We search each facility's procedures, equipment, capabilities, name, description and
-   specialties for words that mean the service (including Indian terms like LSCS, SNCU, CTVS) and for
-   related words (specialty, equipment, staff). Text saying the service is unavailable, planned or referred
-   elsewhere is not counted. Each match is kept as a quote, so every claim can be checked.
-2. **Score the evidence (0–1).** Each field that names the service counts as a separate witness with weight
-   {weights}. A mention that only sits inside a long list of specialities counts at {LIST_STRENGTH:.0%}, a field
-   with only related words at {SUPPORT_STRENGTH:.0%}, and concrete detail (counts, bed numbers, equipment
-   brands) adds {SPECIFIC_DETAIL_WEIGHT:.2f}. Combined as 1 − ∏(1 − weight), so being mentioned consistently
-   in several places matters more than one mention. Sentences that describe a *different* hospital (records
-   often mix in text from directory pages) are ignored.
-3. **Check whether we can trust the record.** Location is checked by letting the facility's coordinates,
-   city and PIN code vote (two that agree win). The evidence score is then multiplied by:
-{penalties}
-4. **Confidence** = evidence × trust. Labels: {labels}, otherwise Low.
-5. **Rank** by confidence × proximity, where proximity = e^(−km ÷ distance scale). The distance scale
-   depends on the service: shorter for emergencies (C-section, trauma), longer for planned care (cardiac
-   surgery, cancer).
+   specialties for words that mean the service (including Indian terms like LSCS, SNCU, CTVS, PMNDP), and for
+   related words. Mentions negated nearby ("not available", "coming soon", "referred to") are flagged, in the
+   spirit of the NegEx rules (Chapman et al. 2001), and sentences about a *different* hospital are dropped.
+   Every match is kept as a quote.
+2. **Learn how much each kind of evidence is worth.** There is no answer key, so the weights cannot be trained
+   the usual way. We fit a latent class model with EM (Dawid & Skene 1979; the "label model" behind Snorkel):
+   whether a facility offers the service is a hidden yes/no, and each field is a noisy witness with its own
+   true-positive and false-positive rate. Those rates are estimated from how often the fields *agree with each
+   other* across all 10,088 records. A field whose mentions are usually corroborated earns a large likelihood
+   ratio; one whose mentions usually stand alone earns a small one.
+3. **Record checks are learned too.** Flags such as "looks like a clinic", "may merge several hospitals" or
+   "no source URL" enter as covariates on the prior (latent class regression); EM estimates how much each one
+   changes the odds. Location problems are *not* treated as evidence against the claim: they widen the
+   uncertainty of the distance instead.
+4. **Confidence** = P(offers the service | its record), by Bayes' rule, with a 90% interval from a bootstrap
+   (refit on resampled facilities 100 times). Labels: {labels}, otherwise Low.
+5. **Can the patient get there in time?** Road time = straight-line km × {access.DETOUR} (detour) ÷ speed, with
+   speed log-normal around {access.SPEED_KMH:.0f} km/h (log-sd {access.SPEED_SD_LOG}) and location uncertainty
+   added. We compute the probability of arriving within the service's clinical window: 2 h for emergency
+   obstetric and surgical care (Lancet Commission on Global Surgery), 1 h for trauma, 1 h one way for dialysis
+   (DOPPS), longer for planned care.
+6. **Rank** by expected value: P(offers it) × P(arrives in time). We always also show the nearest facility
+   that mentions the service, and why it ranked where it did.
 
-**Trade-offs we made on purpose:** a well-documented facility a bit further away can outrank a closer one
-whose claim is weak, so we always tell you about the nearest facility that mentions the service too.
-Duplicate records of the same facility are collapsed. We never fill in missing data. If something isn't in the
-record, we say so.{svc}"""
+**Assumptions we state openly:** fields are treated as independent witnesses given the truth (text scraped from
+one web page can share errors); "offers the service" means the record consistently says so, not an on-site
+check; the detour factor and speed are national averages. Duplicate records are collapsed and missing data is
+never filled in."""
+    if service is not None and model is not None and not service.key.startswith("custom:"):
+        lr = model.likelihood_ratios()
+        rows = "\n".join(f"| {FIELD_LABELS[f]} | {_x(lr[f]['dedicated'])} | {_x(lr[f]['listed'])} |" for f in FIELDS)
+        ors = "\n".join(f"| {COVARIATE_TEXT[c]} | {_x(v)} |" for c, v in model.odds_ratios().items())
+        hours, basis = access.window(service.key)
+        out += f"""
+
+**Learned for {service.label}** (EM on {model.n:,} records, base rate {model.prior():.1%}):
+
+| Field | Dedicated mention | Only inside a long list |
+|---|---|---|
+{rows}
+| Related words only | {_x(lr['support_only']['present'])} | |
+| Text says unavailable / referred | {_x(lr['negated']['present'])} | |
+| Concrete detail (counts, brands) | {_x(lr['specific']['present'])} | |
+
+| Record check | Odds multiplier |
+|---|---|
+{ors}
+
+Time window: {hours:.0f} h ({basis}); reachable distance at 50%: {access.reach_km(hours):.0f} km."""
+    return out
 
 
 def evidence_table(finder: CareFinder, services=None) -> pd.DataFrame:
     """facility × service evidence for every facility with a direct mention (for Delta / Genie)."""
     rows = []
     for service in (services or SERVICES.values()):
-        for rec, ev in zip(finder._records, finder.evidence_for(service)):
+        sc = finder.scores_for(service)
+        odds = finder.model_for(service).odds_ratios()
+        for i, (rec, ev) in enumerate(zip(finder._records, finder.evidence_for(service))):
             if not ev.has_core:
                 continue
-            factors = finder.trust_factors(rec, service, ev)
-            trust = math.prod(m for m, _ in factors)
+            flags = finder.record_flags(rec, service, ev)
             state = rec["state_n"] or (rec["state"] or "").lower() or None
+            p, p_text = float(sc["p"][i]), float(sc["p_text"][i])
             rows.append({
                 "facility_id": rec["id"], "facility_name": rec["name"], "address": rec["address"],
                 "city": rec["city"], "district": rec["district_n"], "state": state, "postcode": rec["postcode"],
-                "service": service.key, "service_label": service.label, "evidence_score": ev.score,
-                "trust": round(trust, 3), "confidence": round(ev.score * trust, 3),
-                "confidence_label": confidence_label(ev.score * trust),
+                "service": service.key, "service_label": service.label, "evidence_score": round(p_text, 3),
+                "trust": round(p / p_text, 3) if p_text > 0 else 1.0, "confidence": round(p, 3),
+                "conf_lo": round(float(sc["lo"][i]), 3), "conf_hi": round(float(sc["hi"][i]), 3),
+                "confidence_label": confidence_label(p),
                 "evidence_fields": ", ".join(FIELD_LABELS[f] for f in ev.core_fields),
                 "citations": json.dumps([{"field": FIELD_LABELS[h.field], "kind": h.kind, "text": h.snippet}
                                          for h in ev.hits], ensure_ascii=False),
                 "top_quote": next((h.snippet for h in ev.hits if h.kind == "core"), None),
-                "caveats": " | ".join(reason for _, reason in factors),
+                "caveats": " | ".join([f"{COVARIATE_TEXT[c]} (odds {_x(odds[c])})" for c in flags if odds[c] < 0.995]
+                                      + finder.location_notes(rec)),
                 "lat": rec["loc_lat"], "lon": rec["loc_lon"], "location_quality": rec["loc_quality"],
+                "loc_sd_km": finder.location_sd(rec),
                 "phone": (rec["phone"] or [None])[0], "website": rec["own_site"] or (rec["website"] or [None])[0],
                 "sources": " ".join(list(rec["source_urls"])[:3]),
             })
@@ -401,10 +466,11 @@ def find_care_sql(target: str) -> str:
     return f"""
 CREATE OR REPLACE FUNCTION {target}.find_care(service_name STRING, place STRING)
 RETURNS TABLE (option_rank INT, facility_name STRING, address STRING, city STRING, district STRING, state STRING,
-               distance_km DOUBLE, confidence_label STRING, confidence DOUBLE, evidence_score DOUBLE, trust DOUBLE,
+               distance_km DOUBLE, p_arrive_in_time DOUBLE, confidence_label STRING, confidence DOUBLE,
+               conf_lo DOUBLE, conf_hi DOUBLE, evidence_score DOUBLE, trust DOUBLE,
                evidence_fields STRING, top_quote STRING, citations STRING, caveats STRING, location_quality STRING,
                phone STRING, website STRING)
-COMMENT 'Best facilities for a service near a place (city, district, village/post office, 6-digit PIN, or state; add ", <state>" to disambiguate). Ranked by confidence x exp(-distance_km / the service travel scale), the same rule as the CareFinder app. Always quote top_quote/citations as evidence and report caveats as uncertainty.'
+COMMENT 'Best facilities for a service near a place (city, district, village/post office, 6-digit PIN, or state; add ", <state>" to disambiguate). Ranked by confidence (learned probability the facility offers the service) x p_arrive_in_time (probability of arriving within the service time window), the same rule as the CareFinder app. Always quote top_quote/citations as evidence and report conf_lo-conf_hi and caveats as uncertainty.'
 RETURN
   WITH q AS (
     SELECT lower(trim(split(place, ',')[0])) AS p,
@@ -419,7 +485,7 @@ RETURN
     LIMIT 1
   ),
   svc AS (
-    SELECT service, travel_km FROM {target}.services
+    SELECT service, window_h FROM {target}.services
     WHERE lower(label) = lower(trim(service_name)) OR service = lower(trim(service_name))
        OR lower(label) LIKE concat('%', lower(trim(service_name)), '%')
        OR lower(core_terms) LIKE concat('%', lower(trim(service_name)), '%')
@@ -427,16 +493,22 @@ RETURN
     LIMIT 1
   ),
   c AS (
-    SELECT e.*, svc.travel_km,
+    SELECT e.*, svc.window_h,
            2 * 6371 * asin(sqrt(pow(sin(radians(e.lat - loc.lat) / 2), 2)
              + cos(radians(loc.lat)) * cos(radians(e.lat)) * pow(sin(radians(e.lon - loc.lon) / 2), 2))) AS d
     FROM {target}.facility_service_evidence e CROSS JOIN loc CROSS JOIN svc
     WHERE e.service = svc.service AND e.lat IS NOT NULL
+  ),
+  a AS (
+    SELECT c.*, 1 / (1 + exp(-1.702 * (ln(window_h) - ln({access.DETOUR} * greatest(d, 0.05) / {access.SPEED_KMH}))
+             / sqrt(pow({access.SPEED_SD_LOG}, 2) + pow(loc_sd_km / greatest(d, loc_sd_km + 1e-9), 2)))) AS reach
+    FROM c
   )
-  SELECT CAST(row_number() OVER (ORDER BY confidence * exp(-d / travel_km) DESC) AS INT) AS option_rank,
-         facility_name, address, city, district, state, round(d, 1) AS distance_km, confidence_label, confidence,
-         evidence_score, trust, evidence_fields, top_quote, citations, caveats, location_quality, phone, website
-  FROM c
+  SELECT CAST(row_number() OVER (ORDER BY confidence * reach DESC) AS INT) AS option_rank,
+         facility_name, address, city, district, state, round(d, 1) AS distance_km, round(reach, 3) AS p_arrive_in_time,
+         confidence_label, confidence, conf_lo, conf_hi, evidence_score, trust, evidence_fields, top_quote, citations,
+         caveats, location_quality, phone, website
+  FROM a
   ORDER BY option_rank
   LIMIT 10
 """

@@ -129,7 +129,7 @@ def test_negated_related_words_do_not_penalise():
                procedure=[], capability=[], equipment=[], specialties=[])
     ev = score_evidence(rec, SERVICES["burn_care"])
     assert ev.has_core
-    assert not any("unavailable" in reason for _, reason in f.trust_factors(rec, SERVICES["burn_care"], ev))
+    assert not any(h.kind == "core" for h in ev.negated)  # only direct mentions can count as "unavailable"
 
 
 def test_snippet_shows_the_match():
@@ -199,3 +199,51 @@ def test_planner_coverage():
 
     audit = audit_summary(f)
     assert audit["records"] == len(f.facilities) and audit["location_fixed"] + audit["location_conflict"] >= 1
+
+
+def test_em_recovers_known_parameters():
+    """Simulate records from a known latent class model; EM must recover its rates and covariate effect."""
+    import numpy as np
+    from carefinder.model import fit, simulate
+    cats = (3, 3, 3, 2)
+    theta1 = [np.array([0.3, 0.2, 0.5]), np.array([0.5, 0.1, 0.4]), np.array([0.6, 0.3, 0.1]), np.array([0.7, 0.3])]
+    theta0 = [np.array([0.97, 0.02, 0.01]), np.array([0.98, 0.015, 0.005]), np.array([0.95, 0.04, 0.01]),
+              np.array([0.9, 0.1])]
+    gamma = np.array([-2.0, -1.0])
+    rng = np.random.default_rng(1)
+    Z = (rng.random((40000, 1)) < 0.3).astype(float)
+    X, Z, y = simulate(40000, theta1, theta0, gamma, Z, seed=2)
+    m = fit(X, Z, cats=cats, n_boot=20)  # true effect is negative, so the sign constraint is inactive
+    for est, true in zip(m.theta1 + m.theta0, theta1 + theta0):
+        assert np.abs(est - true).max() < 0.03
+    assert abs(m.gamma[0] - gamma[0]) < 0.15 and abs(m.gamma[1] - gamma[1]) < 0.2
+    p = m.posterior(X, Z)
+    assert ((p > 0.5) == y).mean() > 0.9
+    lo, hi = m.interval(X[:50], Z[:50])
+    assert (lo <= p[:50] + 1e-9).all() and (hi >= p[:50] - 1e-9).all()
+
+
+def test_access_probability():
+    import numpy as np
+    from carefinder import access
+    km = access.reach_km(2.0)
+    assert abs(float(access.p_reach(km, 2.0)) - 0.5) < 1e-6          # median travel time = window
+    d = np.array([1, 10, 30, 60, 120, 300])
+    p = access.p_reach(d, 2.0)
+    assert (np.diff(p) < 0).all() and p[0] > 0.99 and p[-1] < 0.05      # monotone, sensible tails
+    assert access.p_reach(30, 1.0) < access.p_reach(30, 2.0)            # tighter window, lower chance
+    far = float(access.p_reach(120, 2.0)); fuzzy = float(access.p_reach(120, 2.0, 60.0))
+    assert fuzzy > far                                                  # uncertainty pulls a far place towards 0.5
+
+
+def test_learned_model_orders_evidence(finder):
+    """More independent fields saying it -> higher learned probability; a record check lowers it."""
+    from carefinder import find_service
+    svc = find_service("dialysis")[0]
+    sc = finder.scores_for(svc)
+    ids = list(finder.facilities["id"])
+    p = dict(zip(ids, sc["p"]))
+    assert p["f1"] >= p["f5"] > p["f2"]  # 4 fields + detail >= 3 fields > one line in a description
+    m = finder.model_for(svc)
+    lr = m.likelihood_ratios()
+    assert all(lr[f]["dedicated"] > 1 for f in ("procedure", "capability"))
